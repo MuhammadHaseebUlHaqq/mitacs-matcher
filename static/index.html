@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MITACS_MATCHER // console</title>
+<link rel="stylesheet" href="/brutal.css">
+<style>
+  body { background-image: none; }
+  .app { display: grid; grid-template-columns: 380px 1fr; min-height: 100vh; }
+  @media (max-width: 980px) { .app { grid-template-columns: 1fr; } }
+
+  aside {
+    border-right: 2px solid var(--line);
+    padding: 0 0 26px;
+    max-height: 100vh; overflow-y: auto;
+    position: sticky; top: 0;
+    background: var(--bg);
+  }
+  aside .brand {
+    display: flex; align-items: center; gap: 10px;
+    padding: 18px 20px; border-bottom: 2px solid var(--line);
+    font-weight: 800; text-transform: uppercase; letter-spacing: -0.02em;
+    position: sticky; top: 0; background: var(--bg); z-index: 5;
+  }
+  aside .brand b { color: var(--acc); }
+  aside .brand a { margin-left: auto; font-size: 11px; letter-spacing: .12em; color: var(--dim); text-decoration: none; font-weight: 700; }
+  aside .brand a:hover { color: var(--fg); }
+
+  .blk { padding: 18px 20px; border-bottom: 2px solid var(--line); }
+  .blk > .marker { margin-bottom: 14px; }
+  .field { margin-bottom: 12px; }
+  .field:last-child { margin-bottom: 0; }
+  label.lab {
+    display: block; font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--dim); font-weight: 700; margin-bottom: 6px;
+  }
+  input, select, textarea {
+    width: 100%; font: inherit; font-size: 13px;
+    background: var(--bg); color: var(--fg);
+    border: 2px solid var(--line); border-radius: 0; padding: 9px 10px;
+  }
+  input:focus, select:focus, textarea:focus { outline: 3px solid var(--acc); outline-offset: -3px; }
+  textarea { resize: vertical; min-height: 84px; }
+  select[multiple] { padding: 4px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .hint { font-size: 11px; color: var(--dim); margin: 6px 0 0; line-height: 1.5; }
+
+  .seg { display: grid; grid-template-columns: 1fr 1fr; border: 2px solid var(--line); }
+  .seg button {
+    font: inherit; font-size: 11.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+    padding: 9px 4px; border: none; background: transparent; color: var(--dim); cursor: pointer;
+  }
+  .seg button + button { border-left: 2px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+
+  #drop {
+    border: 2px dashed var(--soft); padding: 22px 12px; text-align: center;
+    color: var(--dim); cursor: pointer; font-size: 12px; letter-spacing: .06em;
+  }
+  #drop.over, #drop:hover { border-color: var(--acc); color: var(--fg); }
+  #drop b { display: block; font-size: 10.5px; letter-spacing: .12em; margin-top: 6px; color: var(--dim); }
+
+  .doc { display: flex; gap: 10px; align-items: flex-start; border: 2px solid var(--line); padding: 8px 10px; margin-top: -2px; font-size: 12px; }
+  .doc .t { flex: 1; min-width: 0; }
+  .doc .nm { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .doc .mt { color: var(--dim); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; }
+  .doc .mt.err { color: hsl(var(--accent)); text-transform: none; letter-spacing: 0; white-space: normal; }
+  .doc button { background: none; border: none; color: var(--dim); font-size: 17px; cursor: pointer; padding: 0 2px; line-height: 1; }
+  .doc button:hover { color: var(--acc); }
+
+  main { padding: 0 0 60px; min-width: 0; }
+  .topbar { display: flex; align-items: center; gap: 12px; padding: 18px 26px; border-bottom: 2px solid var(--line); flex-wrap: wrap; position: sticky; top: 0; background: var(--bg); z-index: 4; }
+  .pill { border: 2px solid var(--line); padding: 3px 9px; font-size: 10.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+  .pill.acc { background: var(--acc); color: #fff; border-color: var(--acc); }
+  .pad { padding: 22px 26px; }
+
+  .note { border: 2px solid var(--line); padding: 11px 13px; font-size: 12.5px; margin-bottom: 18px; }
+  .note.warn { border-color: var(--acc); }
+  .note.bad { border-color: var(--acc); background: var(--acc); color: #fff; }
+
+  .card { border: 2px solid var(--line); padding: 0; margin-top: -2px; display: grid; grid-template-columns: 68px 1fr; }
+  .card .score { display: grid; place-items: center; font-size: 22px; font-weight: 800; border-right: 2px solid var(--line); letter-spacing: -0.03em; }
+  .card .score.hi { background: var(--acc); color: #fff; }
+  .card .score.mid { background: var(--fg); color: var(--bg); }
+  .card .score.lo { background: var(--mut); color: var(--fg); }
+  .card .body { padding: 15px 17px; min-width: 0; }
+  .card h3 { margin: 0 0 5px; font-size: 14.5px; line-height: 1.35; letter-spacing: -0.01em; }
+  .card .meta { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); margin-bottom: 9px; }
+  .card .why { margin: 0 0 9px; font-size: 13px; }
+  details summary { cursor: pointer; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); font-weight: 700; }
+  details ul { margin: 8px 0 0; padding-left: 17px; font-size: 12.5px; color: var(--dim); }
+  details li { margin-bottom: 4px; }
+  details + details { margin-top: 5px; }
+
+  .empty { text-align: center; color: var(--dim); padding: 80px 20px; font-size: 13px; letter-spacing: .06em; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside>
+    <div class="brand">MITACS<b>_</b>MATCHER <a href="/">&larr; Home</a></div>
+
+    <!-- provider ------------------------------------------------------- -->
+    <div class="blk">
+      <div class="marker">// 01 PROVIDER</div>
+      <div class="field">
+        <div class="seg" role="group">
+          <button id="p-or" aria-pressed="true">OpenRouter</button>
+          <button id="p-gm" aria-pressed="false">Gemini</button>
+        </div>
+      </div>
+      <div class="field">
+        <label class="lab" id="keyLab">OpenRouter API key</label>
+        <input id="key" type="password" autocomplete="off" placeholder="sk-or-…">
+      </div>
+      <div class="field">
+        <label class="lab">Model</label>
+        <input id="model" list="modelList" placeholder="loading…">
+        <datalist id="modelList"></datalist>
+        <p class="hint" id="modelHint">Type any model id, or pick from the live catalogue.</p>
+      </div>
+    </div>
+
+    <!-- knowledge base ------------------------------------------------- -->
+    <div class="blk">
+      <div class="marker">// 02 KNOWLEDGE BASE</div>
+      <div class="field">
+        <div id="drop">DROP FILES OR CLICK
+          <b>PDF · DOCX · XLSX · CSV · MD · TXT · HTML · JSON · CODE</b>
+        </div>
+        <input id="file" type="file" multiple class="hidden">
+      </div>
+      <div class="field">
+        <button class="btn-ghost" id="pasteToggle" style="width:100%">+ Paste text instead</button>
+      </div>
+      <div class="field hidden" id="pasteBox">
+        <input id="pasteTitle" placeholder="Note title" style="margin-bottom:8px">
+        <textarea id="pasteText" placeholder="Paste a CV section, a repo README, notes…"></textarea>
+        <button class="btn-ghost" id="pasteSave" style="width:100%;margin-top:8px">Add to knowledge base</button>
+      </div>
+      <div id="docs"></div>
+      <p class="hint" id="kbMeta"></p>
+      <button class="btn-ghost hidden" id="clearKb" style="width:100%;margin-top:10px">Clear knowledge base</button>
+    </div>
+
+    <!-- profile -------------------------------------------------------- -->
+    <div class="blk">
+      <div class="marker">// 03 PROFILE</div>
+      <button class="btn" id="build" style="width:100%" disabled>
+        <span class="ico">&rarr;</span><span class="lbl" style="flex:1">Build profile</span>
+      </button>
+      <p class="hint" id="pmeta">Reads every passage, then consolidates.</p>
+    </div>
+
+    <!-- run ------------------------------------------------------------ -->
+    <div class="blk">
+      <div class="marker">// 04 RUN</div>
+      <div class="two field">
+        <div>
+          <label class="lab">Results</label>
+          <input id="topN" type="number" min="1" max="200" value="50">
+        </div>
+        <div>
+          <label class="lab">Screen width</label>
+          <select id="width">
+            <option value="400" selected>Top 400</option>
+            <option value="800">Top 800</option>
+            <option value="1500">Top 1500</option>
+            <option value="0">Exhaustive</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label class="lab">Province filter (optional)</label>
+        <select id="prov" multiple size="5"></select>
+      </div>
+      <button class="btn" id="run" style="width:100%" disabled>
+        <span class="ico">&rarr;</span><span class="lbl" style="flex:1">Find matches</span>
+      </button>
+      <button class="btn-ghost" id="exp" style="width:100%;margin-top:10px" disabled>Export markdown</button>
+    </div>
+  </aside>
+
+  <main>
+    <div class="topbar" id="topbar">
+      <span class="pill acc" id="corpusPill">— PROJECTS</span>
+      <span class="pill" id="statePill">AWAITING KEY</span>
+    </div>
+
+    <div class="pad">
+      <div id="msg"></div>
+
+      <div class="term hidden" id="termWrap" style="margin-bottom:22px">
+        <div class="term-bar">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span class="spacer"></span><span>PIPELINE.SYS</span>
+        </div>
+        <div class="term-body" id="log"></div>
+      </div>
+
+      <div id="out"><div class="empty">ADD DOCUMENTS · BUILD PROFILE · RUN MATCH</div></div>
+    </div>
+  </main>
+</div>
+
+<script>
+const SID = localStorage.getItem("sid") || (crypto.randomUUID?.() ?? String(Math.random()).slice(2));
+localStorage.setItem("sid", SID);
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+
+let PROVIDER = localStorage.getItem("provider") || "openrouter";
+let DOCS = [], HAS_PROFILE = false, BUSY = false, HEALTH = null;
+
+const keyStoreName = p => "key_" + p;
+const H = () => ({ "X-Session-Id": SID, "X-API-Key": $("key").value.trim() });
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { ...H(), ...(opts.headers || {}) } });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+  return r.json();
+}
+function msg(t, kind = "warn") { $("msg").innerHTML = t ? `<div class="note ${kind}">${esc(t)}</div>` : ""; }
+
+function sync() {
+  const hasKey = !!$("key").value.trim();
+  const readable = DOCS.filter(d => !d.error).length;
+  $("build").disabled = BUSY || !readable || !hasKey;
+  $("run").disabled = BUSY || !HAS_PROFILE || !hasKey;
+  $("clearKb").classList.toggle("hidden", DOCS.length === 0);
+  $("statePill").textContent =
+    BUSY ? "WORKING…" : !hasKey ? "AWAITING KEY" : !readable ? "AWAITING DOCUMENTS"
+    : !HAS_PROFILE ? "READY TO PROFILE" : "READY TO MATCH";
+}
+
+/* ---- provider ---------------------------------------------------------- */
+function setProvider(p) {
+  PROVIDER = p;
+  localStorage.setItem("provider", p);
+  $("p-or").setAttribute("aria-pressed", String(p === "openrouter"));
+  $("p-gm").setAttribute("aria-pressed", String(p === "gemini"));
+  $("keyLab").textContent = p === "openrouter" ? "OpenRouter API key" : "Gemini API key";
+  $("key").placeholder = p === "openrouter" ? "sk-or-…" : "AIza…";
+  $("key").value = sessionStorage.getItem(keyStoreName(p)) || "";
+  $("model").value = localStorage.getItem("model_" + p) || (HEALTH?.defaultModels?.[p] ?? "");
+  loadModels();
+  sync();
+}
+$("p-or").onclick = () => setProvider("openrouter");
+$("p-gm").onclick = () => setProvider("gemini");
+
+$("key").addEventListener("input", () => {
+  sessionStorage.setItem(keyStoreName(PROVIDER), $("key").value);
+  sync();
+  if (PROVIDER === "gemini") loadModels();
+});
+$("model").addEventListener("change", () => localStorage.setItem("model_" + PROVIDER, $("model").value.trim()));
+
+let modelTimer = null;
+function loadModels() {
+  clearTimeout(modelTimer);
+  modelTimer = setTimeout(async () => {
+    try {
+      const r = await api(`/api/models?provider=${PROVIDER}`);
+      $("modelList").innerHTML = r.models
+        .map(m => `<option value="${esc(m.id)}">${esc(m.name)}${m.free ? " · free" : ""}</option>`).join("");
+      $("model").placeholder = HEALTH?.defaultModels?.[PROVIDER] || "";
+      $("modelHint").textContent = `${r.models.length} models available. Type any id, or pick from the list.`;
+    } catch (e) { $("modelHint").textContent = "Catalogue unavailable — type a model id manually."; }
+  }, 350);
+}
+
+/* ---- knowledge base ---------------------------------------------------- */
+function renderKb(kb) {
+  DOCS = kb.documents; HAS_PROFILE = kb.hasProfile;
+  $("docs").innerHTML = DOCS.map(d => `
+    <div class="doc">
+      <div class="t">
+        <div class="nm">${esc(d.title)}</div>
+        <div class="mt ${d.error ? "err" : ""}">${d.error ? esc(d.error) : `${esc(d.kind)} · ${d.chars.toLocaleString()} chars`}</div>
+      </div>
+      <button data-id="${d.id}" title="Remove">&times;</button>
+    </div>`).join("");
+  $("docs").querySelectorAll("button").forEach(b => b.onclick = async () => {
+    renderKb(await api(`/api/kb/${b.dataset.id}`, { method: "DELETE" }));
+  });
+  $("kbMeta").textContent = DOCS.length
+    ? `${kb.readable}/${DOCS.length} readable · ${kb.totalChars.toLocaleString()} chars`
+    : "";
+  if (kb.profileMeta?.units) {
+    $("pmeta").textContent = `${kb.profileMeta.hits}/${kb.profileMeta.units} passages · ${kb.profileMeta.reduceLayers} reduce layer(s)`;
+  }
+  sync();
+}
+
+async function upload(files) {
+  if (!files.length) return;
+  const fd = new FormData();
+  [...files].forEach(f => fd.append("files", f));
+  msg("Parsing documents…");
+  try {
+    const kb = await api("/api/kb", { method: "POST", body: fd });
+    renderKb(kb);
+    const bad = kb.documents.filter(d => d.error).length;
+    msg(bad ? `${bad} file(s) could not be read — see the list.` : "");
+  } catch (e) { msg(e.message, "bad"); }
+}
+$("drop").onclick = () => $("file").click();
+$("file").onchange = e => { upload(e.target.files); e.target.value = ""; };
+$("drop").addEventListener("dragover", e => { e.preventDefault(); $("drop").classList.add("over"); });
+$("drop").addEventListener("dragleave", () => $("drop").classList.remove("over"));
+$("drop").addEventListener("drop", e => { e.preventDefault(); $("drop").classList.remove("over"); upload(e.dataTransfer.files); });
+
+$("pasteToggle").onclick = () => $("pasteBox").classList.toggle("hidden");
+$("pasteSave").onclick = async () => {
+  try {
+    renderKb(await api("/api/kb/text", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: $("pasteTitle").value, text: $("pasteText").value }),
+    }));
+    $("pasteTitle").value = ""; $("pasteText").value = "";
+    $("pasteBox").classList.add("hidden"); msg("");
+  } catch (e) { msg(e.message, "bad"); }
+};
+$("clearKb").onclick = async () => { renderKb(await api("/api/kb", { method: "DELETE" })); msg(""); };
+
+/* ---- stage 0 ----------------------------------------------------------- */
+$("build").onclick = async () => {
+  BUSY = true; sync(); msg("Reading every passage of the knowledge base…");
+  try {
+    const r = await api("/api/profile", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: PROVIDER, model: $("model").value.trim() || undefined }),
+    });
+    HAS_PROFILE = true;
+    const m = r.meta;
+    $("pmeta").textContent = `${m.hits}/${m.units} passages · ${m.reduceLayers} reduce layer(s)`;
+    msg(m.warning || "");
+  } catch (e) { msg(e.message, "bad"); }
+  BUSY = false; sync();
+};
+
+/* ---- stages 1-3 -------------------------------------------------------- */
+$("run").onclick = async () => {
+  BUSY = true; sync(); msg("");
+  $("termWrap").classList.remove("hidden"); $("log").textContent = ""; $("out").innerHTML = "";
+  try {
+    const { jobId } = await api("/api/match", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: PROVIDER, model: $("model").value.trim() || undefined,
+        topN: +$("topN").value, width: +$("width").value,
+        provinces: [...$("prov").selectedOptions].map(o => o.value),
+      }),
+    });
+    await stream(jobId);
+  } catch (e) { msg(e.message, "bad"); }
+  BUSY = false; sync();
+};
+
+function stream(jobId) {
+  return new Promise(resolve => {
+    const es = new EventSource(`/api/match/${jobId}/events`);
+    es.onmessage = ev => {
+      const d = JSON.parse(ev.data);
+      if (d.type === "progress") {
+        const line = document.createElement("div");
+        line.textContent = "> " + d.message;
+        $("log").appendChild(line);
+        $("log").scrollTop = $("log").scrollHeight;
+      } else if (d.type === "done") { render(d.result); es.close(); resolve(); }
+      else if (d.type === "error") { msg(d.message, "bad"); es.close(); resolve(); }
+    };
+    es.onerror = () => { es.close(); resolve(); };
+  });
+}
+
+function render(r) {
+  const s = r.stats;
+  $("topbar").innerHTML =
+    `<span class="pill acc">${r.matches.length} MATCHES</span>` +
+    [`${s.screened.toLocaleString()}/${s.poolSize.toLocaleString()} screened`,
+     `${s.candidates} candidates`, `${s.judged} judged`,
+     `${s.mapCalls + s.judgeCalls} calls`,
+     s.droppedIds ? `${s.droppedIds} ids dropped` : ""]
+      .filter(Boolean).map(t => `<span class="pill">${esc(t)}</span>`).join("");
+
+  if (r.warning) msg(r.warning, "warn");
+
+  const done = document.createElement("div");
+  done.className = "ok"; done.textContent = "> Status: " + r.matches.length + " MATCHES RANKED";
+  $("log").appendChild(done);
+
+  $("out").innerHTML = r.matches.length ? r.matches.map(m => {
+    const p = m.project;
+    const cls = m.score >= 80 ? "hi" : m.score >= 60 ? "mid" : "lo";
+    return `<div class="card">
+      <div class="score ${cls}">${m.score}</div>
+      <div class="body">
+        <h3>${esc(p.title)}</h3>
+        <div class="meta">${esc(p.id)} · ${esc(p.supervisor)} · ${esc(p.university)} · ${esc(p.province)}</div>
+        <p class="why">${esc(m.rationale)}</p>
+        ${m.evidence?.length ? `<details><summary>Evidence (${m.evidence.length})</summary><ul>${m.evidence.map(e => `<li>${esc(e)}</li>`).join("")}</ul></details>` : ""}
+        ${m.gaps?.length ? `<details><summary>Gaps (${m.gaps.length})</summary><ul>${m.gaps.map(g => `<li>${esc(g)}</li>`).join("")}</ul></details>` : ""}
+      </div>
+    </div>`;
+  }).join("") : `<div class="empty">NO MATCHES — WIDEN THE SCREEN OR DROP FILTERS</div>`;
+
+  $("exp").disabled = !r.matches.length;
+}
+
+$("exp").onclick = async () => {
+  try {
+    const { markdown } = await api("/api/export", { method: "POST" });
+    const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown" }));
+    Object.assign(document.createElement("a"), { href: url, download: "mitacs-matches.md" }).click();
+    URL.revokeObjectURL(url);
+  } catch (e) { msg(e.message, "bad"); }
+};
+
+/* ---- boot -------------------------------------------------------------- */
+(async () => {
+  HEALTH = await api("/api/health");
+  $("corpusPill").textContent = `${HEALTH.projects.toLocaleString()} PROJECTS`;
+  $("prov").innerHTML = HEALTH.provinces.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
+  setProvider(PROVIDER);
+  renderKb(await api("/api/kb"));
+})();
+</script>
+</body>
+</html>
