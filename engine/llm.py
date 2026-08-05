@@ -30,7 +30,11 @@ PROVIDERS = ("openrouter", "gemini")
 
 DEFAULT_MODELS = {
     "openrouter": os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct"),
-    "gemini": os.getenv("GEMINI_MODEL", "gemini-flash-latest"),
+    # Lite by default: measured live, the full flash alias resolves to
+    # gemini-3.6-flash whose free tier is ~20 req/min and which spends ~1.9k
+    # thinking tokens per call. The lite alias showed zero thinking overhead
+    # and a far more usable free limit, which is what a fan-out pipeline needs.
+    "gemini": os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest"),
 }
 
 # Cap on concurrent API calls. BYOK, so the real ceiling is the user's own
@@ -42,8 +46,8 @@ MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "8"))
 # `gemini-2.5-flash` is already closed to new users) and a stale hardcoded list
 # hands people a model id that no longer works.
 GEMINI_FALLBACK = [
+    {"id": "gemini-flash-lite-latest", "name": "Gemini Flash Lite (latest) — best free tier", "free": True},
     {"id": "gemini-flash-latest", "name": "Gemini Flash (latest)", "free": True},
-    {"id": "gemini-flash-lite-latest", "name": "Gemini Flash Lite (latest)", "free": True},
     {"id": "gemini-pro-latest", "name": "Gemini Pro (latest)", "free": False},
     {"id": "gemini-3.5-flash", "name": "Gemini 3.5 Flash", "free": False},
 ]
