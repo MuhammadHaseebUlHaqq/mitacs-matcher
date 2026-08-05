@@ -40,6 +40,11 @@ JUDGE_BATCH_SIZE = 6
 # Over-admitting here costs calls but protects against a batch-local score
 # wrongly cutting a strong project before the comparable pass.
 JUDGE_POOL_MULTIPLIER = 2.5
+# Floor on the judge pool. Without it a small `top_n` makes the pool so narrow
+# that ties in the (deliberately non-comparable) map score decide the ranking —
+# the exact failure the judge stage exists to prevent. Costs a few extra calls
+# on small requests and nothing on large ones.
+MIN_JUDGE_POOL = 24
 
 MAP_SYSTEM = (
     "You match a person against research projects. You are given that person's "
@@ -292,7 +297,7 @@ async def run_matching(
         # ---- JUDGE -------------------------------------------------------- #
         # Map `fit` is batch-local, so it is used only to choose WHO gets judged,
         # never to rank the output.
-        pool_size = min(len(best), max(top_n, int(top_n * JUDGE_POOL_MULTIPLIER)))
+        pool_size = min(len(best), max(int(top_n * JUDGE_POOL_MULTIPLIER), MIN_JUDGE_POOL))
         pool_ids = sorted(best, key=lambda pid: -best[pid].fit)[:pool_size]
         pool = [(by_id[pid], best[pid]) for pid in pool_ids]
 
