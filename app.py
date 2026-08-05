@@ -299,6 +299,10 @@ async def match_start(
             queue.put_nowait({"type": "error", "message": f"{type(e).__name__}: {e}"})
         finally:
             queue.put_nowait({"type": "_eof"})
+            # If the browser never opens the SSE stream (tab closed mid-run), the
+            # stream handler never gets to pop this job. Reap it so a long-lived
+            # server does not accumulate finished queues.
+            asyncio.get_running_loop().call_later(300, JOBS.pop, job_id, None)
 
     asyncio.create_task(work())
     return {"jobId": job_id}
