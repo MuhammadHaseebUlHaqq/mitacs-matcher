@@ -291,7 +291,12 @@ function renderKb(kb) {
     ? `${kb.readable}/${DOCS.length} readable · ${kb.totalChars.toLocaleString()} chars`
     : "";
   if (kb.profileMeta?.units) {
-    $("pmeta").textContent = `${kb.profileMeta.hits}/${kb.profileMeta.units} passages · ${kb.profileMeta.reduceLayers} reduce layer(s)`;
+    $("pmeta").textContent =
+      `${kb.profileMeta.hits}/${kb.profileMeta.units} passages used · ` +
+      `${kb.profileMeta.reduceLayers} reduce layer(s)`;
+  } else if (kb.cachedPassages) {
+    $("pmeta").textContent =
+      `${kb.cachedPassages} passage(s) already read — Build profile resumes from there.`;
   }
   sync();
 }
@@ -337,9 +342,17 @@ $("build").onclick = async () => {
     });
     HAS_PROFILE = true;
     const m = r.meta;
-    $("pmeta").textContent = `${m.hits}/${m.units} passages · ${m.reduceLayers} reduce layer(s)`;
+    $("pmeta").textContent =
+      `${m.hits}/${m.units} passages used` +
+      (m.cached ? ` (${m.cached} reused)` : "") +
+      ` · ${m.reduceLayers} reduce layer(s)`;
     msg(m.warning || "");
-  } catch (e) { msg(e.message, "bad"); }
+  } catch (e) {
+    msg(e.message, "bad");
+    // A failed build still banks the passages that succeeded, so refresh the
+    // panel to show what carried over before the user retries.
+    try { renderKb(await api("/api/kb")); } catch (_) {}
+  }
   BUSY = false; sync();
 };
 

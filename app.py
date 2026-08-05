@@ -63,6 +63,7 @@ class Session:
     docs: dict[str, Document] = field(default_factory=dict)
     profile: dict | None = None
     profile_meta: dict = field(default_factory=dict)
+    extract_cache: dict = field(default_factory=dict)
     last_run: MatchRun | None = None
     last_params: dict = field(default_factory=dict)
 
@@ -77,14 +78,15 @@ def session_for(sid: str | None) -> Session:
     if sid not in SESSIONS:
         loaded = store.load(sid)
         SESSIONS[sid] = Session(
-            docs=loaded["docs"], profile=loaded["profile"], profile_meta=loaded["profile_meta"],
+            docs=loaded["docs"], profile=loaded["profile"],
+            profile_meta=loaded["profile_meta"], extract_cache=loaded["extract_cache"],
         )
     return SESSIONS[sid]
 
 
 def persist(sid: str, s: Session) -> None:
     try:
-        store.save(sid, s.docs, s.profile, s.profile_meta)
+        store.save(sid, s.docs, s.profile, s.profile_meta, s.extract_cache)
     except OSError:
         # Persistence is a convenience; never fail a request because the disk
         # store could not be written.
@@ -156,6 +158,8 @@ def _kb_view(s: Session) -> dict:
         "profileMeta": s.profile_meta,
         "totalChars": sum(d["chars"] for d in docs),
         "readable": sum(1 for d in docs if not d["error"]),
+        # How much of a previous (possibly rate-limited) build carried over.
+        "cachedPassages": len(s.extract_cache),
     }
 
 
@@ -170,7 +174,9 @@ async def kb_upload(files: list[UploadFile], x_session_id: str | None = Header(N
     for f in files:
         doc = ingest(f.filename or "untitled", await f.read())
         s.docs[doc.id] = doc
-    # New material invalidates the cached profile.
+    # New material invalidates the consolidated profile, but NOT the per-passage
+    # extract cache — it is keyed by content, so passages that did not change are
+    # still valid and must not be re-read.
     s.profile, s.profile_meta = None, {}
     persist(x_session_id or "", s)
     return _kb_view(s)
@@ -201,7 +207,7 @@ async def kb_delete(doc_id: str, x_session_id: str | None = Header(None)) -> dic
 async def kb_clear(x_session_id: str | None = Header(None)) -> dict:
     s = session_for(x_session_id)
     s.docs.clear()
-    s.profile, s.profile_meta = None, {}
+    s.profile, s.profile_meta, s.extract_cache = None, {}, {}
     store.clear(x_session_id or "")
     return _kb_view(s)
 
@@ -222,15 +228,20 @@ async def profile_build(
     if not usable:
         raise HTTPException(400, "No readable documents in the knowledge base.")
 
-    result = await build_profile(assemble(usable), cfg)
+    result = await build_profile(assemble(usable), cfg, cache=s.extract_cache)
+
+    # Keep whatever was read, even on a failed build: the next attempt resumes
+    # from here instead of re-spending quota on passages that already succeeded.
+    s.extract_cache = result.cache
     if result.is_empty:
+        persist(x_session_id or "", s)
         raise HTTPException(422, result.warning or "No profile information could be extracted.")
 
     s.profile = result.profile
     s.profile_meta = {
         "units": result.n_units, "hits": result.n_hits, "failed": result.n_failed,
-        "reduceLayers": result.reduce_layers, "warning": result.warning,
-        "model": cfg.model, "provider": cfg.provider,
+        "cached": result.n_cached, "reduceLayers": result.reduce_layers,
+        "warning": result.warning, "model": cfg.model, "provider": cfg.provider,
     }
     persist(x_session_id or "", s)
     return {"profile": result.profile, "meta": s.profile_meta, "rendered": render_profile(result.profile)}

@@ -34,15 +34,16 @@ def _path(session_id: str) -> Path:
 
 
 def load(session_id: str) -> dict:
-    """Return {"docs": {id: Document}, "profile": dict|None, "profile_meta": dict}."""
+    """Return {"docs", "profile", "profile_meta", "extract_cache"}."""
+    empty = {"docs": {}, "profile": None, "profile_meta": {}, "extract_cache": {}}
     path = _path(session_id)
     if not path.exists():
-        return {"docs": {}, "profile": None, "profile_meta": {}}
+        return dict(empty)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         # A corrupt store must not brick the app — start clean.
-        return {"docs": {}, "profile": None, "profile_meta": {}}
+        return dict(empty)
 
     docs: dict[str, Document] = {}
     for d in raw.get("docs", []):
@@ -57,10 +58,12 @@ def load(session_id: str) -> dict:
         "docs": docs,
         "profile": raw.get("profile"),
         "profile_meta": raw.get("profile_meta") or {},
+        "extract_cache": raw.get("extract_cache") or {},
     }
 
 
-def save(session_id: str, docs: dict[str, Document], profile: dict | None, profile_meta: dict) -> None:
+def save(session_id: str, docs: dict[str, Document], profile: dict | None,
+         profile_meta: dict, extract_cache: dict | None = None) -> None:
     STORE_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
         "docs": [
@@ -69,6 +72,10 @@ def save(session_id: str, docs: dict[str, Document], profile: dict | None, profi
         ],
         "profile": profile,
         "profile_meta": profile_meta,
+        # Per-passage extracts, so a rate-limited profile build resumes instead
+        # of restarting. Keyed by content hash, so it stays valid across
+        # re-uploads of the same document.
+        "extract_cache": extract_cache or {},
     }
     # Write to a temp file in the same directory, then replace — a crash
     # mid-write leaves the previous good store intact rather than a truncated one.

@@ -350,3 +350,89 @@ def test_profile_on_empty_corpus_does_not_call_the_model(monkeypatch):
     monkeypatch.setattr(profile_mod, "json_call", boom)
     res = run(profile_mod.build_profile(assemble([]), CFG))
     assert res.is_empty and "empty" in res.warning
+
+
+# --------------------------------------------------------------------------- #
+# resumable profile builds
+# --------------------------------------------------------------------------- #
+def test_a_rate_limited_build_banks_what_succeeded(monkeypatch):
+    """The failure that made this necessary: on a free tier some passages die on
+    quota. Whatever was read must be kept so the next attempt resumes."""
+    async def half_fail(client, cfg, system, user, max_tokens=2048):
+        if "beta" in user:
+            raise CallError("quota exceeded")
+        return {"skills": [{"name": "K8s", "strength": "demonstrated", "snippet": "s"}],
+                "domains": [], "projects": [], "experience": [],
+                "interests": [], "achievements": [], "constraints": []}
+
+    monkeypatch.setattr(profile_mod, "json_call", half_fail)
+    docs = [Document(id="a", title="alpha", text="alpha content"),
+            Document(id="b", title="beta", text="beta content")]
+    res = run(profile_mod.build_profile(assemble(docs), CFG))
+    assert res.n_failed == 1
+    assert len(res.cache) == 1, "the passage that succeeded must be banked"
+    assert "retry just those" in res.warning
+
+
+def test_retry_only_re_reads_the_failed_passages(monkeypatch):
+    calls = {"n": 0}
+
+    async def count(client, cfg, system, user, max_tokens=2048):
+        if system.startswith("You are a profile extractor"):
+            calls["n"] += 1
+        return {"skills": [{"name": "X", "strength": "used", "snippet": "s"}],
+                "domains": [], "projects": [], "experience": [],
+                "interests": [], "achievements": [], "constraints": []}
+
+    monkeypatch.setattr(profile_mod, "json_call", count)
+    docs = [Document(id="a", title="alpha", text="alpha content"),
+            Document(id="b", title="beta", text="beta content")]
+    corpus = assemble(docs)
+
+    first = run(profile_mod.build_profile(corpus, CFG))
+    assert calls["n"] == 2 and len(first.cache) == 2
+
+    calls["n"] = 0
+    second = run(profile_mod.build_profile(corpus, CFG, cache=first.cache))
+    assert calls["n"] == 0, "a fully cached rebuild must not call the model again"
+    assert second.n_cached == 2
+    assert not second.is_empty
+
+
+def test_total_failure_says_the_build_failed_not_that_it_is_thin(monkeypatch):
+    """`may be missing information` reads like a warning and hides that there is
+    no profile at all — which is why Find matches stayed disabled with no
+    apparent reason."""
+    async def all_fail(client, cfg, system, user, max_tokens=2048):
+        raise CallError("quota exceeded")
+
+    monkeypatch.setattr(profile_mod, "json_call", all_fail)
+    docs = [Document(id="a", title="alpha", text="alpha content")]
+    res = run(profile_mod.build_profile(assemble(docs), CFG))
+    assert res.is_empty
+    assert "Profile build failed" in res.warning
+    assert "resume" in res.warning
+    assert "may be missing information" not in res.warning
+
+
+def test_cache_key_is_content_addressed_so_reupload_reuses_it(monkeypatch):
+    """Document ids are regenerated on every upload; the cache must key on text
+    so re-adding the same file does not re-spend quota."""
+    calls = {"n": 0}
+
+    async def count(client, cfg, system, user, max_tokens=2048):
+        if system.startswith("You are a profile extractor"):
+            calls["n"] += 1
+        return {"skills": [{"name": "X", "strength": "used", "snippet": "s"}],
+                "domains": [], "projects": [], "experience": [],
+                "interests": [], "achievements": [], "constraints": []}
+
+    monkeypatch.setattr(profile_mod, "json_call", count)
+    first = run(profile_mod.build_profile(
+        assemble([Document(id="id-one", title="cv.pdf", text="same body")]), CFG))
+    calls["n"] = 0
+    # same content, brand-new document id — as happens on re-upload
+    second = run(profile_mod.build_profile(
+        assemble([Document(id="id-two", title="cv.pdf", text="same body")]),
+        CFG, cache=first.cache))
+    assert calls["n"] == 0 and second.n_cached == 1

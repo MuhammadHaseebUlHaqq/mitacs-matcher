@@ -22,6 +22,7 @@ once per knowledge base and cached, then reused for every match run.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -29,6 +30,16 @@ import httpx
 
 from .corpus import Corpus, EvidenceUnit
 from .llm import CallError, LLMConfig, MAX_CONCURRENCY, json_call
+
+
+def unit_key(unit: EvidenceUnit) -> str:
+    """Content-addressed id for a passage.
+
+    Keyed on the text rather than the unit id so the extract cache survives
+    re-uploading the same document (ids are regenerated per upload), while
+    editing a document invalidates only the passages that actually changed.
+    """
+    return hashlib.sha1(unit.text.encode("utf-8")).hexdigest()[:16]
 
 # How many per-unit extracts one reduce call folds before another layer is needed.
 REDUCE_FANIN = 6
@@ -97,9 +108,13 @@ class ProfileResult:
     n_units: int = 0
     n_hits: int = 0
     n_failed: int = 0
+    n_cached: int = 0
     reduce_layers: int = 0
     warning: str = ""
     extracts: list[UnitExtract] = field(default_factory=list)
+    # Successful per-passage extracts, keyed by `unit_key`. Persisted by the
+    # caller so a rate-limited build can be resumed instead of restarted.
+    cache: dict[str, dict] = field(default_factory=dict)
 
     @property
     def is_empty(self) -> bool:
@@ -196,38 +211,70 @@ async def build_profile(
     corpus: Corpus,
     cfg: LLMConfig,
     progress: Callable[[str], None] | None = None,
+    cache: dict[str, dict] | None = None,
 ) -> ProfileResult:
+    """Read the knowledge base into a capability profile.
+
+    `cache` carries per-passage extracts from earlier attempts. Passages already
+    in it are not re-read, so a build interrupted by a rate limit resumes where
+    it stopped rather than re-spending quota on work that already succeeded —
+    which is the difference between finishing and never finishing on a free tier.
+    """
+
     def note(m: str) -> None:
         if progress:
             progress(m)
 
     units = corpus.units
-    result = ProfileResult(n_units=len(units))
+    result = ProfileResult(n_units=len(units), cache=dict(cache or {}))
     if not units:
         result.warning = "The knowledge base is empty — add documents first."
         return result
 
+    todo = [u for u in units if unit_key(u) not in result.cache]
+    result.n_cached = len(units) - len(todo)
+
     sem = asyncio.Semaphore(MAX_CONCURRENCY)
     async with httpx.AsyncClient() as client:
-        note(f"Reading {len(units)} knowledge-base passages in parallel ({cfg.model})…")
-        extracts = list(await asyncio.gather(
-            *(_extract_unit(client, sem, cfg, u) for u in units)
-        ))
-        result.extracts = extracts
+        if todo:
+            if result.n_cached:
+                note(f"{result.n_cached} passage(s) already read; resuming with {len(todo)}.")
+            note(f"Reading {len(todo)} knowledge-base passage(s) in parallel ({cfg.model})…")
+            extracts = list(await asyncio.gather(
+                *(_extract_unit(client, sem, cfg, u) for u in todo)
+            ))
+            result.extracts = extracts
+            result.n_failed = sum(1 for e in extracts if e.failed)
+            for e in extracts:
+                if e.data and any(e.data.get(k) for k in _EMPTY):
+                    result.cache[unit_key(e.unit)] = e.data
+        else:
+            note(f"All {len(units)} passage(s) already read — reusing cached extracts.")
 
-        good = [e for e in extracts if e.data and any(e.data.get(k) for k in _EMPTY)]
+        good = [result.cache[unit_key(u)] for u in units if unit_key(u) in result.cache]
         result.n_hits = len(good)
-        result.n_failed = sum(1 for e in extracts if e.failed)
-        note(f"{len(good)}/{len(units)} passages yielded profile data ({result.n_failed} failed).")
+        note(f"{len(good)}/{len(units)} passages usable ({result.n_failed} failed this attempt).")
 
         if result.n_failed:
-            reason = next((e.error for e in extracts if e.failed and e.error), "")
-            pct = round(100 * result.n_failed / len(units))
-            result.warning = (
-                f"Partial profile — {result.n_failed} of {len(units)} passages ({pct}%) could not "
-                f"be read, so the profile may be missing information."
-                + (f" Reason: {reason}" if reason else "")
-            )
+            reason = next((e.error for e in result.extracts if e.failed and e.error), "")
+            if not good:
+                # Nothing at all came back: this is a failed build, not a thin
+                # one. Say so plainly — "may be missing information" reads like a
+                # warning and hides that there is no profile to match against.
+                result.warning = (
+                    f"Profile build failed — none of the {len(units)} passage(s) could be read, "
+                    f"so there is no profile yet. Nothing was lost: press Build profile again and "
+                    f"it will resume."
+                    + (f" Reason: {reason}" if reason else "")
+                )
+            else:
+                pct = round(100 * result.n_failed / len(units))
+                result.warning = (
+                    f"Partial profile — {result.n_failed} of {len(units)} passages ({pct}%) could "
+                    f"not be read this time, so the profile may be missing information. Press "
+                    f"Build profile again to retry just those."
+                    + (f" Reason: {reason}" if reason else "")
+                )
             note(result.warning)
 
         if not good:
@@ -236,7 +283,7 @@ async def build_profile(
             return result
 
         note(f"Consolidating {len(good)} partial profiles…")
-        merged, layers = await _reduce(client, sem, cfg, [e.data for e in good])
+        merged, layers = await _reduce(client, sem, cfg, good)
         result.profile = merged
         result.reduce_layers = layers
 
