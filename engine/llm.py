@@ -87,6 +87,47 @@ def _error_message(r: httpx.Response) -> str:
     return f"HTTP {r.status_code}"
 
 
+# Longest we will wait on a single backoff. Galt RAG capped this at 5s to keep a
+# rate-limited free model from feeling hung. That is too aggressive here: Gemini
+# free tiers are per-MINUTE (gemini-3.6-flash allows 5 req/min) and reply
+# "retry in 45s", so a 5s ceiling guarantees every retry is wasted and the whole
+# fan-out fails. Wait as long as the provider asks, up to this bound.
+MAX_RETRY_WAIT = float(os.getenv("MAX_RETRY_WAIT", "50"))
+
+_RETRY_SECONDS = re.compile(r"(\d+(?:\.\d+)?)\s*s")
+
+
+def _retry_after_seconds(r: httpx.Response) -> float:
+    """How long the provider wants us to wait, in seconds.
+
+    OpenRouter uses the standard `Retry-After` header. Gemini does not — it puts
+    the delay in the error body as a `RetryInfo` detail (`retryDelay: "45.3s"`)
+    and repeats it in the message text, so fall back to both.
+    """
+    header = r.headers.get("retry-after")
+    if header:
+        try:
+            return float(header)
+        except ValueError:
+            pass
+
+    try:
+        body = r.json()
+    except ValueError:
+        return 0.0
+    if not isinstance(body, dict):
+        return 0.0
+
+    err = body.get("error") or {}
+    for detail in err.get("details") or []:
+        if isinstance(detail, dict) and "retryDelay" in detail:
+            match = _RETRY_SECONDS.search(str(detail["retryDelay"]))
+            if match:
+                return float(match.group(1))
+
+    match = re.search(r"retry in\s+(\d+(?:\.\d+)?)", str(err.get("message") or ""), re.I)
+    return float(match.group(1)) if match else 0.0
+
 
 # --------------------------------------------------------------------------- #
 # Per-provider request shaping
@@ -201,8 +242,8 @@ async def llm_call(
                 last_reason = _error_message(r)
                 if attempt == attempts - 1:
                     break
-                wait = float(r.headers.get("retry-after", 0) or 0) or 1.5 * (attempt + 1)
-                await asyncio.sleep(min(wait, 5) + random.uniform(0, 1.5))
+                wait = _retry_after_seconds(r) or 1.5 * (attempt + 1)
+                await asyncio.sleep(min(wait, MAX_RETRY_WAIT) + random.uniform(0, 1.5))
                 continue
             r.raise_for_status()
             return read(r.json())
