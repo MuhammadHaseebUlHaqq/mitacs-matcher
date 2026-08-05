@@ -1,0 +1,228 @@
+/*
+ * Brutalist design system.
+ *
+ * Tokens lifted from the v0 "Brutalist AI SaaS Landing Page" template's
+ * compiled stylesheet, so the palette and geometry match exactly:
+ *   --radius: 0rem, 2px solid borders, JetBrains Mono throughout,
+ *   dot-grid via radial-gradient(circle, #c4c2b8 1px, transparent 1px).
+ */
+
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,700;0,800;1,400&display=swap");
+
+:root {
+  --background: 43 23% 93%;
+  --foreground: 0 0% 4%;
+  --card: 43 23% 93%;
+  --card-foreground: 0 0% 4%;
+  --primary: 0 0% 4%;
+  --primary-foreground: 43 23% 93%;
+  --accent: 20 90% 50%;
+  --accent-foreground: 0 0% 100%;
+  --border: 0 0% 75%;
+  --muted: 40 10% 85%;
+  --muted-foreground: 0 0% 40%;
+  --dot: #c4c2b8;
+  --radius: 0rem;
+
+  --bg: hsl(var(--background));
+  --fg: hsl(var(--foreground));
+  --acc: hsl(var(--accent));
+  --line: hsl(var(--foreground));
+  --soft: hsl(var(--border));
+  --dim: hsl(var(--muted-foreground));
+  --mut: hsl(var(--muted));
+}
+
+:root[data-theme="dark"],
+html.dark {
+  --background: 0 0% 6%;
+  --foreground: 43 23% 93%;
+  --card: 0 0% 8%;
+  --card-foreground: 43 23% 93%;
+  --primary: 43 23% 93%;
+  --primary-foreground: 0 0% 6%;
+  --accent: 20 90% 45%;
+  --border: 0 0% 25%;
+  --muted: 0 0% 15%;
+  --muted-foreground: 0 0% 60%;
+  --dot: #333;
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  background-image: radial-gradient(circle, var(--dot) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* ---- type ---------------------------------------------------------------- */
+.display {
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 0.88;
+  text-transform: uppercase;
+  margin: 0;
+  font-size: clamp(2.75rem, 11vw, 7.5rem);
+}
+
+/* Dot-matrix letterforms: punch the glyphs out of a dot grid, approximating
+   the template's GeistPixelGrid display face without shipping the font. */
+.dotted {
+  background-image: radial-gradient(circle, currentColor 1.15px, transparent 1.3px);
+  background-size: 5px 5px;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--dim);
+  font-weight: 700;
+}
+
+h2.sec-title {
+  font-size: clamp(1.4rem, 3.2vw, 2rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  margin: 0 0 8px;
+  line-height: 1.1;
+}
+
+.lead { color: var(--dim); max-width: 62ch; margin: 0; }
+
+/* ---- section rule -------------------------------------------------------- */
+.marker {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--dim);
+  text-transform: uppercase;
+  margin: 0 0 26px;
+}
+.marker::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--soft);
+}
+
+/* ---- primitives ---------------------------------------------------------- */
+.wrap { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+.panel {
+  border: 2px solid var(--line);
+  background: var(--bg);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: stretch;
+  border: 2px solid var(--line);
+  background: var(--fg);
+  color: var(--bg);
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-decoration: none;
+  cursor: pointer;
+  padding: 0;
+  border-radius: 0;
+}
+.btn > .ico {
+  background: var(--acc);
+  color: #fff;
+  padding: 12px 15px;
+  border-right: 2px solid var(--line);
+  display: grid;
+  place-items: center;
+}
+.btn > .lbl { padding: 12px 22px; }
+.btn:hover { filter: brightness(1.15); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--fg);
+  border: 2px solid var(--line);
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 11px 18px;
+  cursor: pointer;
+  border-radius: 0;
+}
+.btn-ghost:hover { background: var(--fg); color: var(--bg); }
+.btn-ghost:disabled { opacity: 0.45; cursor: not-allowed; background: transparent; color: var(--fg); }
+
+.tag {
+  display: inline-block;
+  border: 2px solid var(--line);
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.tag-acc { background: var(--acc); color: #fff; border-color: var(--acc); }
+
+/* ---- terminal ------------------------------------------------------------ */
+.term { border: 2px solid var(--line); background: var(--bg); }
+.term-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 2px solid var(--line);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+.term-bar .dots { display: flex; gap: 5px; }
+.term-bar i { width: 9px; height: 9px; display: block; }
+.term-bar i:nth-child(1) { background: var(--acc); }
+.term-bar i:nth-child(2) { background: var(--fg); }
+.term-bar i:nth-child(3) { border: 1.5px solid var(--fg); }
+.term-bar .spacer { flex: 1; }
+.term-body {
+  background: #0a0a0a;
+  color: #d8d5cc;
+  padding: 16px;
+  font-size: 12.5px;
+  line-height: 1.75;
+  min-height: 150px;
+  max-height: 260px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.term-body .ok { color: #fff; font-weight: 700; }
+.term-body .cursor { color: var(--acc); }
+
+/* ---- utility ------------------------------------------------------------- */
+.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); }
+@media (max-width: 880px) {
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+}
+
+a { color: inherit; }
+code { font-family: inherit; background: var(--mut); padding: 1px 5px; }
