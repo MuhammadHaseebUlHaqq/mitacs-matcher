@@ -302,6 +302,12 @@ def test_binary_upload_is_refused_clearly(client):
 def test_landing_and_app_pages_render(client):
     landing = client.get("/")
     assert landing.status_code == 200 and "MITACS" in landing.text
+    # The landing page is for an applicant, not an engineer: it must lead with
+    # the task, and must not leak pipeline vocabulary.
+    body = landing.text
+    assert "Find my projects" in body
+    for jargon in ("map-reduce", "embeddings", "BM25", "IDF", "vector", "fan-out"):
+        assert jargon.lower() not in body.lower(), f"landing copy leaks {jargon!r}"
     ui = client.get("/app")
     assert ui.status_code == 200 and "KNOWLEDGE BASE" in ui.text
     css = client.get("/brutal.css")

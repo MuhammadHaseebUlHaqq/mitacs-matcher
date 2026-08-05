@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MITACS_MATCHER // Read every project. Score every fit.</title>
+<title>MITACS_MATCHER // Find the Globalink projects that actually fit you</title>
 <link rel="stylesheet" href="/brutal.css">
 <style>
   nav {
@@ -20,9 +20,10 @@
   @media (max-width: 760px) { nav .links { display: none; } }
 
   section { padding: 78px 0; border-bottom: 2px solid var(--line); }
-  .hero { padding: 96px 0 84px; text-align: center; }
+  .hero { padding: 92px 0 80px; text-align: center; }
   .hero .lead { margin: 26px auto 32px; text-align: center; }
   .hero .cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .hero .sub { margin-top: 18px; font-size: 12px; color: var(--dim); letter-spacing: .06em; }
 
   .stat { border: 2px solid var(--line); padding: 24px; margin-left: -2px; margin-top: -2px; }
   .stat .n { font-size: clamp(1.9rem, 4.5vw, 2.9rem); font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
@@ -43,6 +44,21 @@
   .split li { margin-bottom: 7px; }
   .no { color: var(--dim); text-decoration: line-through; }
 
+  .result { border: 2px solid var(--line); display: grid; grid-template-columns: 72px 1fr; margin-top: -2px; }
+  .result .sc { display: grid; place-items: center; font-size: 24px; font-weight: 800; letter-spacing: -.03em; border-right: 2px solid var(--line); }
+  .result .sc.hi { background: var(--acc); color: #fff; }
+  .result .sc.mid { background: var(--fg); color: var(--bg); }
+  .result .bd { padding: 15px 18px; min-width: 0; }
+  .result h4 { margin: 0 0 4px; font-size: 14px; line-height: 1.35; }
+  .result .mt { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin-bottom: 8px; }
+  .result p { margin: 0; font-size: 13px; color: var(--dim); }
+  .result .ev { margin-top: 8px; font-size: 12px; border-left: 3px solid var(--acc); padding-left: 10px; }
+
+  .faq { border-top: 2px solid var(--line); padding: 20px 0; }
+  .faq:first-of-type { border-top: none; }
+  .faq h3 { margin: 0 0 6px; font-size: 14px; text-transform: uppercase; letter-spacing: .03em; }
+  .faq p { margin: 0; color: var(--dim); font-size: 13px; max-width: 78ch; }
+
   footer { padding: 34px 0; font-size: 12px; color: var(--dim); }
   footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
   footer .spacer { flex: 1; }
@@ -54,70 +70,109 @@
   <div class="wrap">
     <div class="brand">MITACS<b>_</b>MATCHER</div>
     <div class="links">
-      <a href="#how">How</a>
-      <a href="#method">Method</a>
-      <a href="#kb">Knowledge base</a>
-      <a href="/app">Launch</a>
+      <a href="#how">How it works</a>
+      <a href="#example">Example</a>
+      <a href="#faq">FAQ</a>
+      <a href="/app">Start</a>
     </div>
   </div>
 </nav>
 
 <header class="hero">
   <div class="wrap">
-    <h1 class="display dotted">Read.<br>Judge.<br>Rank.</h1>
+    <h1 class="display dotted">Your CV.<br>Their list.<br>Your ten.</h1>
     <p class="lead">
-      MITACS_MATCHER reads your CV, transcripts and project write-ups, then reads
-      the Globalink project database against them — and scores every fit with the
-      evidence that earned it. No embeddings. No vector search. No guessing.
+      Globalink has thousands of research projects. You may apply to ten.
+      Upload your CV and transcripts, and get a ranked shortlist of the projects
+      you are genuinely competitive for — each one explaining which line of your
+      own CV earned it.
     </p>
     <div class="cta">
-      <a class="btn" href="/app"><span class="ico">&rarr;</span><span class="lbl">Launch the matcher</span></a>
-      <a class="btn-ghost" href="#method" style="text-decoration:none;display:inline-block">Read the method</a>
+      <a class="btn" href="/app"><span class="ico">&rarr;</span><span class="lbl">Find my projects</span></a>
+      <a class="btn-ghost" href="#how" style="text-decoration:none;display:inline-block">See how it works</a>
     </div>
+    <p class="sub">Runs on your own machine · your documents never leave it</p>
   </div>
 </header>
 
 <section>
   <div class="wrap">
-    <div class="marker">// SECTION: CORPUS <span style="margin-left:auto">001</span></div>
+    <div class="marker">// THE PROBLEM <span style="margin-left:auto">001</span></div>
     <div class="grid-4" style="margin-left:2px;margin-top:2px">
-      <div class="stat"><div class="n" id="n-projects">3,359</div><div class="k">Projects indexed</div></div>
-      <div class="stat"><div class="n">10</div><div class="k">Provinces covered</div></div>
-      <div class="stat"><div class="n">0</div><div class="k">Embeddings used</div></div>
-      <div class="stat"><div class="n">100</div><div class="k">Point scored scale</div></div>
+      <div class="stat"><div class="n" id="n-projects">3,359</div><div class="k">Projects to read</div></div>
+      <div class="stat"><div class="n">10</div><div class="k">You may apply to</div></div>
+      <div class="stat"><div class="n">3</div><div class="k">Provinces minimum</div></div>
+      <div class="stat"><div class="n">~40h</div><div class="k">To read them yourself</div></div>
     </div>
+    <p class="lead" style="margin-top:28px">
+      Most people skim a few pages of the project list, search a keyword or two,
+      and apply to whatever looks familiar. That misses the projects where your
+      experience transfers but the vocabulary does not — which is where the real
+      opportunities are.
+    </p>
   </div>
 </section>
 
 <section id="how">
   <div class="wrap">
-    <div class="marker">// SECTION: PIPELINE <span style="margin-left:auto">002</span></div>
-    <h2 class="sec-title">Four stages, everything<br>read by a model</h2>
-    <p class="lead" style="margin-bottom:32px">
-      Retrieval that cannot reason will miss you. A CV saying <code>kubeadm, Calico CNI, Helm</code>
-      has to match a project asking for cloud-native orchestration — that is an inference,
-      not a nearest neighbour.
+    <div class="marker">// HOW IT WORKS <span style="margin-left:auto">002</span></div>
+    <h2 class="sec-title">Three steps, about<br>ten minutes</h2>
+    <div class="grid-3" style="margin-left:2px;margin-top:26px">
+      <div class="step">
+        <div class="num">STEP 01</div>
+        <h3>Add your documents</h3>
+        <p>CV, transcripts, project write-ups, a research statement, even a repo README. PDF, Word, Excel, Markdown or plain text — or just paste it in. Add more any time; nothing is thrown away.</p>
+      </div>
+      <div class="step">
+        <div class="num">STEP 02</div>
+        <h3>Build your profile</h3>
+        <p>Every page is read and turned into a picture of what you can actually do — skills, projects, experience, research interests — with the evidence behind each one. Built once, then reused.</p>
+      </div>
+      <div class="step">
+        <div class="num">STEP 03</div>
+        <h3>Get your shortlist</h3>
+        <p>Projects are read against your profile and scored out of 100. You choose how many you want back and can filter by province. Export the whole thing as a document.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="example">
+  <div class="wrap">
+    <div class="marker">// WHAT YOU GET BACK <span style="margin-left:auto">003</span></div>
+    <h2 class="sec-title">A score, and the reason<br>for the score</h2>
+    <p class="lead" style="margin-bottom:26px">
+      Real output from a computer-science CV. Every match names the specific thing
+      in your background that earned it, and what you would still need to learn.
     </p>
-    <div class="grid-4" style="margin-left:2px;margin-top:2px">
-      <div class="step">
-        <div class="num">STAGE 00</div>
-        <h3>Profile</h3>
-        <p>Every passage of your knowledge base is read in parallel and asked what it proves you can do. The partials are folded by a real consolidation pass, not concatenated.</p>
+
+    <div style="margin-top:2px">
+      <div class="result">
+        <div class="sc hi">95</div>
+        <div class="bd">
+          <h4>KV Cache Pruning for Efficient Large Language Model Inference</h4>
+          <div class="mt">Algoma University · Ontario</div>
+          <p>Direct, hands-on experience with KV-cache analysis and inference optimization makes this an exact match.</p>
+          <div class="ev">From your CV: benchmarking work on LLM inference, with memory analysis.</div>
+        </div>
       </div>
-      <div class="step">
-        <div class="num">STAGE 01</div>
-        <h3>Recall</h3>
-        <p>An IDF term filter narrows the field. It never ranks and it is not vector similarity — set it to exhaustive to skip it entirely.</p>
+      <div class="result">
+        <div class="sc hi">90</div>
+        <div class="bd">
+          <h4>Policy-as-Code Guardrails for Autonomous Change Agents</h4>
+          <div class="mt">Université du Québec à Chicoutimi · Québec</div>
+          <p>Professional DevOps experience combined with multi-agent work — a project you would never have found by keyword search.</p>
+          <div class="ev">From your CV: deployed microservices with Helm; built CI/CD pipelines.</div>
+        </div>
       </div>
-      <div class="step">
-        <div class="num">STAGE 02</div>
-        <h3>Map</h3>
-        <p>Projects are read in batches with a bounded fan-out. Each call returns plausible fits with quotes from your own profile as evidence.</p>
-      </div>
-      <div class="step">
-        <div class="num">STAGE 03</div>
-        <h3>Judge</h3>
-        <p>Survivors are re-scored head-to-head on one calibrated scale. Map scores are batch-local, so they choose who gets judged — never the ranking.</p>
+      <div class="result">
+        <div class="sc mid">74</div>
+        <div class="bd">
+          <h4>Energy-Aware Quality of Service in Cloud Systems</h4>
+          <div class="mt">École de Technologie Supérieure · Québec</div>
+          <p>Solid foundation from your container orchestration work; the energy-measurement side would be new.</p>
+          <div class="ev">Gap named up front, so you can judge the stretch yourself.</div>
+        </div>
       </div>
     </div>
   </div>
@@ -125,70 +180,62 @@
 
 <section>
   <div class="wrap">
-    <div class="marker">// SECTION: RAW_DATA <span style="margin-left:auto">003</span></div>
-    <div class="term">
-      <div class="term-bar">
-        <span class="dots"><i></i><i></i><i></i></span>
-        <span class="spacer"></span>
-        <span>PIPELINE.SYS</span>
-      </div>
-      <div class="term-body" id="term"></div>
-    </div>
-  </div>
-</section>
-
-<section id="method">
-  <div class="wrap">
-    <div class="marker">// SECTION: METHOD <span style="margin-left:auto">004</span></div>
-    <h2 class="sec-title">Relevance is judged,<br>never estimated</h2>
+    <div class="marker">// WHY NOT JUST SEARCH <span style="margin-left:auto">004</span></div>
+    <h2 class="sec-title">Keyword search misses<br>the ones worth having</h2>
     <div class="split" style="margin-top:26px">
       <div>
-        <h3><span class="tag">Conventional RAG</span></h3>
+        <h3><span class="tag">Searching the portal</span></h3>
         <ul>
-          <li class="no">Pre-computes embeddings for every document</li>
-          <li class="no">Retrieves by cosine similarity in a vector index</li>
-          <li class="no">Misses paraphrase, synonym, antonym, inference</li>
-          <li class="no">Returns a chunk, with no verdict on whether it fits</li>
-          <li class="no">Silently returns nothing when the vector misses</li>
+          <li class="no">Only finds projects that use your exact words</li>
+          <li class="no">Misses transferable experience under different vocabulary</li>
+          <li class="no">Gives you a list, but no sense of where you actually rank</li>
+          <li class="no">No idea which of the ten slots to spend</li>
+          <li class="no">You still read hundreds of descriptions yourself</li>
         </ul>
       </div>
       <div>
-        <h3><span class="tag tag-acc">This engine</span></h3>
+        <h3><span class="tag tag-acc">This tool</span></h3>
         <ul>
-          <li>No embeddings, no vector DB, no cosine — anywhere</li>
-          <li>A model reads the text and judges relevance directly</li>
-          <li>Cited ids are resolved; unresolvable ones dropped and counted</li>
-          <li>Every score carries the quote from your profile that earned it</li>
-          <li>Failed units are surfaced as partial results, never hidden</li>
+          <li>Understands that container orchestration and Kubernetes are the same thing</li>
+          <li>Finds projects in fields you would not have thought to search</li>
+          <li>Scores every match on one scale, so you can rank them</li>
+          <li>Names the gap as well as the fit, so you can judge the stretch</li>
+          <li>Tells you honestly when it could not read something</li>
         </ul>
       </div>
     </div>
   </div>
 </section>
 
-<section id="kb">
+<section id="faq">
   <div class="wrap">
-    <div class="marker">// SECTION: KNOWLEDGE_BASE <span style="margin-left:auto">005</span></div>
-    <h2 class="sec-title">Bring your own documents,<br>and your own key</h2>
-    <div class="grid-3" style="margin-left:2px;margin-top:26px">
-      <div class="step">
-        <div class="num">INGEST</div>
-        <h3>Any text-shaped file</h3>
-        <p>PDF, DOCX, Markdown, TXT, CSV, XLSX, HTML, JSON, YAML and source files. Or paste a note directly. Unreadable files are flagged, never silently skipped.</p>
-      </div>
-      <div class="step">
-        <div class="num">PROVIDERS</div>
-        <h3>OpenRouter or Gemini</h3>
-        <p>Pick either, with a live model catalogue for both. The key is sent per request, used, and discarded — never stored, cached or logged by the server.</p>
-      </div>
-      <div class="step">
-        <div class="num">PERSIST</div>
-        <h3>Survives restarts</h3>
-        <p>Parsed text and the cached profile are written to disk per session, so you upload once. Keys are never part of that file.</p>
-      </div>
+    <div class="marker">// QUESTIONS <span style="margin-left:auto">005</span></div>
+    <div class="faq">
+      <h3>Where do my documents go?</h3>
+      <p>Nowhere. The whole thing runs on your own machine, and your files are only ever sent to the AI provider you choose with your own key. There is no account and no server holding your CV.</p>
+    </div>
+    <div class="faq">
+      <h3>Do I need to pay for anything?</h3>
+      <p>You need an API key from OpenRouter or Google Gemini. Both have free tiers that are enough for this. The tool never charges you anything itself.</p>
+    </div>
+    <div class="faq">
+      <h3>What if I add more documents later?</h3>
+      <p>Add them any time and rebuild. Your uploads stay put between visits, and pages that were already read are not read again — so adding one document does not mean starting over.</p>
+    </div>
+    <div class="faq">
+      <h3>What if it stops halfway?</h3>
+      <p>Free API tiers have per-minute limits, so a long run can be interrupted. Everything already done is kept — press the button again and it picks up where it stopped rather than starting from the beginning.</p>
+    </div>
+    <div class="faq">
+      <h3>Can I trust the scores?</h3>
+      <p>Treat them as a strong first pass, not a verdict. Every score comes with the evidence behind it so you can check the reasoning yourself, and the honest gaps are shown alongside the fit. Read the projects before you apply.</p>
+    </div>
+    <div class="faq">
+      <h3>Does this apply for me?</h3>
+      <p>No. It produces your shortlist and an exportable summary. You still apply through the Mitacs portal yourself, and you still need at least three different provinces across your choices.</p>
     </div>
     <div style="margin-top:34px">
-      <a class="btn" href="/app"><span class="ico">&rarr;</span><span class="lbl">Launch the matcher</span></a>
+      <a class="btn" href="/app"><span class="ico">&rarr;</span><span class="lbl">Find my projects</span></a>
     </div>
   </div>
 </section>
@@ -197,52 +244,15 @@
   <div class="wrap">
     <span>MITACS_MATCHER</span>
     <span class="spacer"></span>
-    <span>EMBEDDINGS: 0</span>
+    <span>RUNS LOCALLY</span>
     <span>·</span>
-    <span>BYOK</span>
+    <span>YOUR OWN API KEY</span>
     <span>·</span>
-    <span>LOCAL ONLY</span>
+    <span>NOT AFFILIATED WITH MITACS</span>
   </div>
 </footer>
 
 <script>
-const LINES = [
-  ["> Loading project corpus: 3,359 records", 0],
-  ["> Reading knowledge base: 14 passages", 0],
-  ["> Map: 14 parallel extraction calls", 0],
-  ["> Reduce: folding 14 partials -> 1 profile", 0],
-  ["> Profile: 23 skills, 6 domains, 9 projects", 0],
-  ["> Recall filter: 3,359 -> 400 candidates", 0],
-  ["> Map: screening 400 projects, 80 calls", 0],
-  ["> Gathered: 137 plausible candidates", 0],
-  ["> Dropped 0 unresolvable ids", 0],
-  ["> Judge: re-scoring top 125 head-to-head", 0],
-  ["> Calibrated scale applied: 0-100", 0],
-  ["> Status: 50 MATCHES RANKED", 1],
-];
-
-const term = document.getElementById("term");
-let i = 0;
-function tick() {
-  if (i >= LINES.length) {
-    setTimeout(() => { term.innerHTML = ""; i = 0; tick(); }, 3200);
-    return;
-  }
-  const [text, strong] = LINES[i++];
-  const div = document.createElement("div");
-  if (strong) div.className = "ok";
-  div.textContent = text;
-  term.appendChild(div);
-  const cur = document.getElementById("cur");
-  if (cur) cur.remove();
-  const c = document.createElement("div");
-  c.id = "cur"; c.className = "cursor"; c.textContent = "_";
-  term.appendChild(c);
-  term.scrollTop = term.scrollHeight;
-  setTimeout(tick, 360);
-}
-tick();
-
 fetch("/api/health").then(r => r.json()).then(h => {
   document.getElementById("n-projects").textContent = h.projects.toLocaleString();
 }).catch(() => {});
