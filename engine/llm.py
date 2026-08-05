@@ -30,7 +30,7 @@ PROVIDERS = ("openrouter", "gemini")
 
 DEFAULT_MODELS = {
     "openrouter": os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct"),
-    "gemini": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+    "gemini": os.getenv("GEMINI_MODEL", "gemini-flash-latest"),
 }
 
 # Cap on concurrent API calls. BYOK, so the real ceiling is the user's own
@@ -38,11 +38,14 @@ DEFAULT_MODELS = {
 MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "8"))
 
 # Fallback Gemini catalogue, used when we cannot list models live (no key yet).
+# Prefer the rolling `-latest` aliases: pinned versions retire (as of Aug 2026
+# `gemini-2.5-flash` is already closed to new users) and a stale hardcoded list
+# hands people a model id that no longer works.
 GEMINI_FALLBACK = [
-    {"id": "gemini-2.0-flash", "name": "Gemini 2.0 Flash", "free": True},
-    {"id": "gemini-2.0-flash-lite", "name": "Gemini 2.0 Flash Lite", "free": True},
-    {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash", "free": False},
-    {"id": "gemini-2.5-pro", "name": "Gemini 2.5 Pro", "free": False},
+    {"id": "gemini-flash-latest", "name": "Gemini Flash (latest)", "free": True},
+    {"id": "gemini-flash-lite-latest", "name": "Gemini Flash Lite (latest)", "free": True},
+    {"id": "gemini-pro-latest", "name": "Gemini Pro (latest)", "free": False},
+    {"id": "gemini-3.5-flash", "name": "Gemini 3.5 Flash", "free": False},
 ]
 
 
