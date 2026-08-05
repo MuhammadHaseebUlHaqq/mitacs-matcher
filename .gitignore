@@ -1,0 +1,6 @@
+data/kb/
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+server.log
