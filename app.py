@@ -41,8 +41,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from engine import store
 from engine.corpus import Document, assemble
 from engine.ingest import from_pasted_text, ingest
-from engine.llm import DEFAULT_MODELS, PROVIDERS, LLMConfig, list_models
-from engine.matching import MatchRun, run_matching
+from engine.llm import DEFAULT_MODELS, MAX_CONCURRENCY, PROVIDERS, LLMConfig, list_models
+from engine.matching import JUDGE_BATCH_SIZE, MAP_BATCH_SIZE, MatchRun, run_matching
 from engine.prefilter import Prefilter
 from engine.profile import build_profile, render_profile
 
@@ -69,7 +69,9 @@ class Session:
 
 
 SESSIONS: dict[str, Session] = {}
-JOBS: dict[str, asyncio.Queue] = {}
+# job id -> (event queue, running task). The task handle is what makes a run
+# cancellable; without it a mistaken 3,000-project run has to be waited out.
+JOBS: dict[str, tuple[asyncio.Queue, asyncio.Task]] = {}
 
 
 def session_for(sid: str | None) -> Session:
@@ -281,13 +283,22 @@ async def match_start(
 
     job_id = uuid.uuid4().hex[:12]
     queue: asyncio.Queue = asyncio.Queue()
-    JOBS[job_id] = queue
 
     async def work() -> None:
         def note(m: str) -> None:
             queue.put_nowait({"type": "progress", "message": m})
 
         try:
+            # Say up front how much work this is. On a free tier the request
+            # count, not the token count, is the limit that bites.
+            screened_n = width if width > 0 else len(pool)
+            screened_n = min(screened_n, len(pool))
+            est_map = -(-screened_n // MAP_BATCH_SIZE)
+            est_judge = -(-min(screened_n, max(int(top_n * 2.5), 24)) // JUDGE_BATCH_SIZE)
+            note(f"Plan: ~{est_map + est_judge} model calls "
+                 f"({est_map} screening + up to {est_judge} judging), "
+                 f"{MAX_CONCURRENCY} at a time.")
+
             if width > 0 and PREFILTER is not None:
                 note(f"Narrowing {len(pool)} projects to the top {width} by term overlap…")
                 if len(pool) == len(PROJECTS):
@@ -306,6 +317,9 @@ async def match_start(
             s.last_params = {"topN": top_n, "width": width, "model": cfg.model,
                              "provider": cfg.provider, "poolSize": len(pool)}
             queue.put_nowait({"type": "done", "result": _run_view(result, len(pool))})
+        except asyncio.CancelledError:
+            queue.put_nowait({"type": "error", "message": "Run cancelled."})
+            raise
         except Exception as e:  # noqa: BLE001 — report, never swallow
             queue.put_nowait({"type": "error", "message": f"{type(e).__name__}: {e}"})
         finally:
@@ -315,8 +329,17 @@ async def match_start(
             # server does not accumulate finished queues.
             asyncio.get_running_loop().call_later(300, JOBS.pop, job_id, None)
 
-    asyncio.create_task(work())
+    JOBS[job_id] = (queue, asyncio.create_task(work()))
     return {"jobId": job_id}
+
+
+@app.post("/api/match/{job_id}/cancel")
+async def match_cancel(job_id: str) -> dict:
+    entry = JOBS.get(job_id)
+    if entry is None:
+        raise HTTPException(404, "Unknown job.")
+    entry[1].cancel()
+    return {"cancelled": True}
 
 
 def _run_view(run: MatchRun, pool_size: int) -> dict:
@@ -339,9 +362,10 @@ def _run_view(run: MatchRun, pool_size: int) -> dict:
 
 @app.get("/api/match/{job_id}/events")
 async def match_events(job_id: str) -> StreamingResponse:
-    queue = JOBS.get(job_id)
-    if queue is None:
+    entry = JOBS.get(job_id)
+    if entry is None:
         raise HTTPException(404, "Unknown job.")
+    queue = entry[0]
 
     async def stream():
         try:

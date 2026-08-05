@@ -312,3 +312,47 @@ def test_landing_and_app_pages_render(client):
     assert ui.status_code == 200 and "KNOWLEDGE BASE" in ui.text
     css = client.get("/brutal.css")
     assert css.status_code == 200 and "--radius: 0rem" in css.text
+
+
+# --------------------------------------------------------------------------- #
+# long-run controls
+# --------------------------------------------------------------------------- #
+def test_run_reports_a_plan_and_per_batch_progress(client, fake_llm):
+    """A wide run on a rate-limited tier takes minutes. Stage-level messages
+    alone are indistinguishable from a hang, so the run must announce its size
+    and then report progress as batches land."""
+    _upload_md(client)
+    client.post("/api/profile", headers=SID, json={})
+
+    start = client.post("/api/match", headers=SID, json={"topN": 5, "width": 40})
+    events = _drain(client, start.json()["jobId"])
+    msgs = [e["message"] for e in events if e["type"] == "progress"]
+
+    assert any(m.startswith("Plan:") and "model calls" in m for m in msgs), msgs
+    assert any("screened" in m and "batches" in m for m in msgs), msgs
+    assert any("judged" in m and "batches" in m for m in msgs), msgs
+
+
+def test_cancelling_an_unknown_job_is_a_404(client):
+    assert client.post("/api/match/nope/cancel").status_code == 404
+
+
+def test_a_run_can_be_cancelled(client, fake_llm, monkeypatch):
+    """Without this, a mistaken 3,000-project run has to be waited out."""
+    import asyncio as _asyncio
+    from engine import matching as _m
+
+    async def slow(client_, cfg, system, user, max_tokens=2048):
+        await _asyncio.sleep(30)
+        return {"candidates": []}
+
+    monkeypatch.setattr(_m, "json_call", slow)
+    _upload_md(client)
+    client.post("/api/profile", headers=SID, json={})
+
+    start = client.post("/api/match", headers=SID, json={"topN": 5, "width": 40})
+    job = start.json()["jobId"]
+    assert client.post(f"/api/match/{job}/cancel").json()["cancelled"] is True
+
+    events = _drain(client, job)
+    assert any(e["type"] == "error" and "cancelled" in e["message"].lower() for e in events), events

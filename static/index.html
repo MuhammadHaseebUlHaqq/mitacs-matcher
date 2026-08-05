@@ -121,6 +121,7 @@
         <input id="model" list="modelList" placeholder="loading…">
         <datalist id="modelList"></datalist>
         <p class="hint" id="modelHint">Type any model id, or pick from the live catalogue.</p>
+        <p class="hint" id="modelWarn" style="color:var(--acc)"></p>
       </div>
     </div>
 
@@ -177,9 +178,11 @@
         <label class="lab">Province filter (optional)</label>
         <select id="prov" multiple size="5"></select>
       </div>
+      <p class="hint" id="plan"></p>
       <button class="btn" id="run" style="width:100%" disabled>
         <span class="ico">&rarr;</span><span class="lbl" style="flex:1">Find matches</span>
       </button>
+      <button class="btn-ghost hidden" id="cancel" style="width:100%;margin-top:10px">Cancel run</button>
       <button class="btn-ghost" id="exp" style="width:100%;margin-top:10px" disabled>Export markdown</button>
     </div>
   </aside>
@@ -259,6 +262,30 @@ $("key").addEventListener("input", () => {
 });
 $("model").addEventListener("change", () => localStorage.setItem("model_" + PROVIDER, $("model").value.trim()));
 
+// Mirrors the server's batch sizes. The binding constraint on a free tier is
+// requests per minute, not tokens, so the call count is the number that matters.
+const MAP_BATCH = 5, JUDGE_BATCH = 6;
+// Models whose free tier is too tight for a wide fan-out.
+const SLOW_FREE = /gemini-(flash-latest|3\.6-flash|3-flash|pro|2\.5-pro)/i;
+
+function updatePlan() {
+  const topN = +$("topN").value || 0;
+  const width = +$("width").value;
+  const screened = width > 0 ? Math.min(width, 3359) : 3359;
+  const map = Math.ceil(screened / MAP_BATCH);
+  const judge = Math.ceil(Math.min(screened, Math.max(Math.round(topN * 2.5), 24)) / JUDGE_BATCH);
+  const total = map + judge;
+  const slow = SLOW_FREE.test($("model").value || "");
+  const mins = slow ? Math.ceil(total / 20) : Math.ceil(total / 60);
+  $("plan").innerHTML =
+    `~${total} model calls (${map} screening + up to ${judge} judging).` +
+    (slow && total > 40
+      ? ` <span style="color:var(--acc)">This model's free tier is ~20/min — expect ${mins}+ min. Use a smaller width or a lite model.</span>`
+      : ` Roughly ${mins} min on a free tier.`);
+}
+["topN", "width", "model"].forEach(id =>
+  $(id).addEventListener("input", updatePlan));
+
 let modelTimer = null;
 function loadModels() {
   clearTimeout(modelTimer);
@@ -269,6 +296,10 @@ function loadModels() {
         .map(m => `<option value="${esc(m.id)}">${esc(m.name)}${m.free ? " · free" : ""}</option>`).join("");
       $("model").placeholder = HEALTH?.defaultModels?.[PROVIDER] || "";
       $("modelHint").textContent = `${r.models.length} models available. Type any id, or pick from the list.`;
+      $("modelWarn").textContent = SLOW_FREE.test($("model").value || "")
+        ? "This model has a tight free-tier limit. gemini-flash-lite-latest is much faster here."
+        : "";
+      updatePlan();
     } catch (e) { $("modelHint").textContent = "Catalogue unavailable — type a model id manually."; }
   }, 350);
 }
@@ -357,8 +388,16 @@ $("build").onclick = async () => {
 };
 
 /* ---- stages 1-3 -------------------------------------------------------- */
+let JOB = null;
+
+$("cancel").onclick = async () => {
+  if (!JOB) return;
+  try { await api(`/api/match/${JOB}/cancel`, { method: "POST" }); } catch (_) {}
+};
+
 $("run").onclick = async () => {
   BUSY = true; sync(); msg("");
+  $("cancel").classList.remove("hidden");
   $("termWrap").classList.remove("hidden"); $("log").textContent = ""; $("out").innerHTML = "";
   try {
     const { jobId } = await api("/api/match", {
@@ -369,8 +408,11 @@ $("run").onclick = async () => {
         provinces: [...$("prov").selectedOptions].map(o => o.value),
       }),
     });
+    JOB = jobId;
     await stream(jobId);
   } catch (e) { msg(e.message, "bad"); }
+  JOB = null;
+  $("cancel").classList.add("hidden");
   BUSY = false; sync();
 };
 
@@ -441,6 +483,7 @@ $("exp").onclick = async () => {
   $("prov").innerHTML = HEALTH.provinces.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
   setProvider(PROVIDER);
   renderKb(await api("/api/kb"));
+  updatePlan();
 })();
 </script>
 </body>

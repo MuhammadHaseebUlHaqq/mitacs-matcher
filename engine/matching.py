@@ -255,10 +255,26 @@ async def run_matching(
     sem = asyncio.Semaphore(MAX_CONCURRENCY)
     async with httpx.AsyncClient() as client:
         # ---- MAP ---------------------------------------------------------- #
-        note(f"Screening {len(projects)} projects in {len(map_batches)} parallel calls ({cfg.model})…")
-        results = await asyncio.gather(
-            *(_map_call(client, sem, cfg, profile_text, b) for b in map_batches)
-        )
+        # Progress is reported per call, not per stage. On a rate-limited free
+        # tier this phase can run for minutes, and a single "screening N
+        # projects" line with nothing after it is indistinguishable from a hang.
+        note(f"Screening {len(projects)} projects in {len(map_batches)} calls "
+             f"({cfg.model}, {MAX_CONCURRENCY} at a time)…")
+        done = {"n": 0, "hits": 0, "failed": 0}
+
+        async def mapped(batch: list[dict]) -> tuple[list[Candidate], str]:
+            out = await _map_call(client, sem, cfg, profile_text, batch)
+            done["n"] += 1
+            if out[1]:
+                done["failed"] += 1
+            else:
+                done["hits"] += len(out[0])
+            if done["n"] % 2 == 0 or done["n"] == len(map_batches):
+                note(f"  screened {done['n']}/{len(map_batches)} batches · "
+                     f"{done['hits']} candidates · {done['failed']} failed")
+            return out
+
+        results = await asyncio.gather(*(mapped(b) for b in map_batches))
 
         # ---- GATHER ------------------------------------------------------- #
         best: dict[str, Candidate] = {}
@@ -305,9 +321,18 @@ async def run_matching(
         run.judge_calls = len(judge_batches)
         note(f"Judging the top {len(pool)} head-to-head in {len(judge_batches)} calls…")
 
-        judged = await asyncio.gather(
-            *(_judge_call(client, sem, cfg, profile_text, b) for b in judge_batches)
-        )
+        jdone = {"n": 0, "failed": 0}
+
+        async def judged_batch(batch):
+            out = await _judge_call(client, sem, cfg, profile_text, batch)
+            jdone["n"] += 1
+            if out[1]:
+                jdone["failed"] += 1
+            note(f"  judged {jdone['n']}/{len(judge_batches)} batches"
+                 + (f" · {jdone['failed']} failed" if jdone["failed"] else ""))
+            return out
+
+        judged = await asyncio.gather(*(judged_batch(b) for b in judge_batches))
 
         matches: list[Match] = []
         judge_error = ""
