@@ -76,12 +76,15 @@ body {
 /* Dot-matrix letterforms: punch the glyphs out of a dot grid, approximating
    the template's GeistPixelGrid display face without shipping the font. */
 .dotted {
-  background-image: radial-gradient(circle, currentColor 1.15px, transparent 1.3px);
+  /* The dot colour must be an explicit token, NOT currentColor: clipping the
+     background to the text requires a transparent text fill, which would make
+     currentColor transparent too and render the heading invisible. */
+  background-image: radial-gradient(circle, var(--fg) 1.15px, transparent 1.35px);
   background-size: 5px 5px;
   -webkit-background-clip: text;
   background-clip: text;
-  color: transparent;
   -webkit-text-fill-color: transparent;
+  color: transparent;
 }
 
 .eyebrow {
