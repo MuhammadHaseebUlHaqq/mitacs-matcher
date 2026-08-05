@@ -112,9 +112,26 @@ def _openrouter_request(cfg: LLMConfig, system: str, user: str, max_tokens: int,
     return OPENROUTER_URL, payload, headers
 
 
+# Current Gemini models spend "thinking" tokens out of the SAME budget as the
+# visible answer, and `thinkingConfig.thinkingBudget: 0` is rejected with
+# HTTP 400 — reasoning cannot be turned off. Measured live on the profile
+# extraction prompt: ~1,900 thought tokens before a single output token.
+#
+# At maxOutputTokens=2048 that left 77 tokens for the answer, so the call came
+# back 200-OK with JSON truncated mid-object — which surfaced as "model did not
+# return parseable JSON" and failed every unit. At 8192 the same call finishes
+# with finishReason STOP and parses cleanly.
+#
+# maxOutputTokens is a cap, not a reservation: unused budget is not billed, so
+# reserving generous headroom costs nothing and prevents silent truncation.
+GEMINI_THINKING_RESERVE = 4096
+GEMINI_MIN_OUTPUT_TOKENS = 8192
+
+
 def _gemini_request(cfg: LLMConfig, system: str, user: str, max_tokens: int,
                     temperature: float, want_json: bool) -> tuple[str, dict, dict]:
-    generation: dict[str, Any] = {"temperature": temperature, "maxOutputTokens": max_tokens}
+    budget = max(max_tokens + GEMINI_THINKING_RESERVE, GEMINI_MIN_OUTPUT_TOKENS)
+    generation: dict[str, Any] = {"temperature": temperature, "maxOutputTokens": budget}
     if want_json:
         generation["responseMimeType"] = "application/json"
     payload = {
@@ -143,7 +160,10 @@ def _gemini_text(body: dict) -> str:
     if not text:
         reason = cand.get("finishReason")
         if reason == "MAX_TOKENS":
-            raise CallError("Gemini hit the output token limit before returning any text")
+            raise CallError(
+                "Gemini spent the whole output budget on reasoning tokens and returned "
+                "no text — raise max_tokens (see GEMINI_MIN_OUTPUT_TOKENS)"
+            )
         raise CallError(f"Gemini returned an empty response{f' ({reason})' if reason else ''}")
     return text
 
