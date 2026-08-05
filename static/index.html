@@ -13,15 +13,13 @@
   aside {
     border-right: 2px solid var(--line);
     padding: 0 0 26px;
-    max-height: 100vh; overflow-y: auto;
-    position: sticky; top: 0;
     background: var(--bg);
   }
   aside .brand {
     display: flex; align-items: center; gap: 10px;
     padding: 18px 20px; border-bottom: 2px solid var(--line);
     font-weight: 800; text-transform: uppercase; letter-spacing: -0.02em;
-    position: sticky; top: 0; background: var(--bg); z-index: 5;
+    background: var(--bg);
   }
   aside .brand b { color: var(--acc); }
   aside .brand a { margin-left: auto; font-size: 11px; letter-spacing: .12em; color: var(--dim); text-decoration: none; font-weight: 700; }
@@ -42,7 +40,9 @@
   }
   input:focus, select:focus, textarea:focus { outline: 3px solid var(--acc); outline-offset: -3px; }
   textarea { resize: vertical; min-height: 84px; }
-  select[multiple] { padding: 4px; }
+  /* Every list shows all of its options — no inner scrollbars anywhere. */
+  select[multiple] { padding: 4px; overflow: hidden; height: auto; }
+  .term-body { max-height: none; overflow: visible; }
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .hint { font-size: 11px; color: var(--dim); margin: 6px 0 0; line-height: 1.5; }
 
@@ -70,7 +70,7 @@
   .doc button:hover { color: var(--acc); }
 
   main { padding: 0 0 60px; min-width: 0; }
-  .topbar { display: flex; align-items: center; gap: 12px; padding: 18px 26px; border-bottom: 2px solid var(--line); flex-wrap: wrap; position: sticky; top: 0; background: var(--bg); z-index: 4; }
+  .topbar { display: flex; align-items: center; gap: 12px; padding: 18px 26px; border-bottom: 2px solid var(--line); flex-wrap: wrap; background: var(--bg); }
   .pill { border: 2px solid var(--line); padding: 3px 9px; font-size: 10.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
   .pill.acc { background: var(--acc); color: #fff; border-color: var(--acc); }
   .pad { padding: 22px 26px; }
@@ -93,6 +93,21 @@
   details li { margin-bottom: 4px; }
   details + details { margin-top: 5px; }
 
+  .card h3 .tt {
+    font: inherit; background: none; border: none; padding: 0; text-align: left;
+    color: inherit; cursor: pointer; border-bottom: 2px solid transparent;
+  }
+  .card h3 .tt:hover { border-bottom-color: var(--acc); }
+  details.full { margin-top: 10px; border-top: 2px solid var(--line); padding-top: 9px; }
+  details.full > summary { color: var(--acc); }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 6px 16px; margin: 12px 0 4px; }
+  .facts > div { display: flex; flex-direction: column; font-size: 12px; }
+  .facts b { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); font-weight: 700; }
+  .sec { margin-top: 14px; }
+  .sec h5 { margin: 0 0 4px; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+  .sec p { margin: 0; font-size: 12.5px; line-height: 1.65; white-space: pre-wrap; }
+  .acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+  .acts button { width: auto; padding: 8px 14px; font-size: 11px; }
   .empty { text-align: center; color: var(--dim); padding: 80px 20px; font-size: 13px; letter-spacing: .06em; }
   .hidden { display: none !important; }
 </style>
@@ -176,7 +191,7 @@
       </div>
       <div class="field">
         <label class="lab">Province filter (optional)</label>
-        <select id="prov" multiple size="5"></select>
+        <select id="prov" multiple></select>
       </div>
       <p class="hint" id="plan"></p>
       <button class="btn" id="run" style="width:100%" disabled>
@@ -425,7 +440,7 @@ function stream(jobId) {
         const line = document.createElement("div");
         line.textContent = "> " + d.message;
         $("log").appendChild(line);
-        $("log").scrollTop = $("log").scrollHeight;
+
       } else if (d.type === "done") { render(d.result); es.close(); resolve(); }
       else if (d.type === "error") { msg(d.message, "bad"); es.close(); resolve(); }
     };
@@ -449,22 +464,91 @@ function render(r) {
   done.className = "ok"; done.textContent = "> Status: " + r.matches.length + " MATCHES RANKED";
   $("log").appendChild(done);
 
-  $("out").innerHTML = r.matches.length ? r.matches.map(m => {
+  $("out").innerHTML = r.matches.length ? r.matches.map((m, i) => {
     const p = m.project;
     const cls = m.score >= 80 ? "hi" : m.score >= 60 ? "mid" : "lo";
+    const facts = [
+      ["Supervisor", p.supervisor], ["University", p.university],
+      ["Campus / city", p.city], ["Province", p.province],
+      ["Language", p.language], ["Preferred start", p.startDate],
+      ["Project ID", p.id],
+    ].filter(([, v]) => v);
+    const section = (label, body) => body
+      ? `<div class="sec"><h5>${label}</h5><p>${esc(body)}</p></div>` : "";
     return `<div class="card">
       <div class="score ${cls}">${m.score}</div>
       <div class="body">
-        <h3>${esc(p.title)}</h3>
+        <h3><button class="tt" data-open="${i}" title="Show full project">${esc(p.title)}</button></h3>
         <div class="meta">${esc(p.id)} · ${esc(p.supervisor)} · ${esc(p.university)} · ${esc(p.province)}</div>
         <p class="why">${esc(m.rationale)}</p>
         ${m.evidence?.length ? `<details><summary>Evidence (${m.evidence.length})</summary><ul>${m.evidence.map(e => `<li>${esc(e)}</li>`).join("")}</ul></details>` : ""}
         ${m.gaps?.length ? `<details><summary>Gaps (${m.gaps.length})</summary><ul>${m.gaps.map(g => `<li>${esc(g)}</li>`).join("")}</ul></details>` : ""}
+        <details class="full"><summary>Full project details</summary>
+          <div class="facts">${facts.map(([k, v]) => `<div><b>${k}</b><span>${esc(v)}</span></div>`).join("")}</div>
+          ${section("Project description", p.description)}
+          ${section("Research area", p.researchArea)}
+          ${section("Student role", p.studentRoles)}
+          ${section("Required skills / background", p.studentSkills)}
+          <div class="acts">
+            <button class="btn-ghost go" data-title="${esc(p.title)}">Open on Globalink</button>
+            <button class="btn-ghost cp" data-title="${esc(p.title)}">Copy title</button>
+          </div>
+          <p class="hint" style="margin-top:8px">
+            Globalink has no direct link to a single project — its detail view is a
+            pop-up, so the address never changes. <b>Open on Globalink</b> copies this
+            exact title and opens the project list; paste it into <i>Keyword search</i>
+            and this project is the only result.
+          </p>
+        </details>
       </div>
     </div>`;
   }).join("") : `<div class="empty">NO MATCHES — WIDEN THE SCREEN OR DROP FILTERS</div>`;
 
+  wireCards();
   $("exp").disabled = !r.matches.length;
+}
+
+const GLOBALINK = "https://globalink.mitacs.ca/#/student/application/projects";
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (_) {
+    // Clipboard API needs a secure context; fall back to a temporary selection.
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (_) {}
+    ta.remove();
+    return ok;
+  }
+}
+
+function flash(btn, text) {
+  const was = btn.textContent;
+  btn.textContent = text;
+  setTimeout(() => { btn.textContent = was; }, 1600);
+}
+
+function wireCards() {
+  // Clicking the heading opens the same panel as the summary.
+  $("out").querySelectorAll("button.tt").forEach(b => b.onclick = () => {
+    const d = b.closest(".body").querySelector("details.full");
+    d.open = !d.open;
+    if (d.open) d.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  });
+
+  $("out").querySelectorAll("button.go").forEach(b => b.onclick = async () => {
+    const ok = await copyText(b.dataset.title);
+    flash(b, ok ? "Title copied — paste in Keyword search" : "Copy failed — copy the title manually");
+    window.open(GLOBALINK, "_blank", "noopener");
+  });
+
+  $("out").querySelectorAll("button.cp").forEach(b => b.onclick = async () => {
+    flash(b, (await copyText(b.dataset.title)) ? "Copied" : "Copy failed");
+  });
 }
 
 $("exp").onclick = async () => {
@@ -481,6 +565,7 @@ $("exp").onclick = async () => {
   HEALTH = await api("/api/health");
   $("corpusPill").textContent = `${HEALTH.projects.toLocaleString()} PROJECTS`;
   $("prov").innerHTML = HEALTH.provinces.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
+  $("prov").size = Math.max(2, HEALTH.provinces.length);   // show every province, never scroll
   setProvider(PROVIDER);
   renderKb(await api("/api/kb"));
   updatePlan();

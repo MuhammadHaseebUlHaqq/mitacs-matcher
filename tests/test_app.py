@@ -356,3 +356,35 @@ def test_a_run_can_be_cancelled(client, fake_llm, monkeypatch):
 
     events = _drain(client, job)
     assert any(e["type"] == "error" and "cancelled" in e["message"].lower() for e in events), events
+
+
+# --------------------------------------------------------------------------- #
+# opening a project on Globalink
+# --------------------------------------------------------------------------- #
+def test_results_carry_every_field_needed_to_read_a_project(client, fake_llm):
+    """Globalink's detail view is a modal with no URL of its own, so the app has
+    to be able to show the whole project itself rather than linking out."""
+    _upload_md(client)
+    client.post("/api/profile", headers=SID, json={})
+    start = client.post("/api/match", headers=SID, json={"topN": 3, "width": 25})
+    result = [e for e in _drain(client, start.json()["jobId"]) if e["type"] == "done"][0]["result"]
+
+    assert result["matches"]
+    for m in result["matches"]:
+        p = m["project"]
+        for field in ("id", "title", "description", "supervisor",
+                      "university", "province", "language", "startDate"):
+            assert field in p, f"result is missing {field!r}, needed for the detail view"
+        assert p["title"].strip(), "an empty title would break the Globalink title search"
+
+
+def test_export_explains_how_to_open_a_project(client, fake_llm):
+    _upload_md(client)
+    client.post("/api/profile", headers=SID, json={})
+    start = client.post("/api/match", headers=SID, json={"topN": 2, "width": 25})
+    _drain(client, start.json()["jobId"])
+
+    md = client.post("/api/export", headers=SID).json()["markdown"]
+    assert "globalink.mitacs.ca/#/student/application/projects" in md
+    assert "Keyword search" in md
+    assert md.count("Search this title on Globalink:") == 2

@@ -403,14 +403,25 @@ async def export(x_session_id: str | None = Header(None)) -> JSONResponse:
     ]
     if s.last_run.warning:
         lines += [f"> ⚠️ {s.last_run.warning}", ""]
+    # Globalink's project detail is a modal, so there is no per-project URL to
+    # link to. Searching the exact title returns that project alone, so that is
+    # the hand-off we give.
+    lines += [
+        "> To open any project: go to "
+        "<https://globalink.mitacs.ca/#/student/application/projects> and paste the "
+        "project title into **Keyword search**. The exact title matches only that project.",
+        "",
+    ]
 
     for i, m in enumerate(s.last_run.matches, start=1):
         pr = m.project
         lines += [
             f"## {i}. [{m.score}] {pr.get('title')}", "",
             f"**ID** `{pr.get('id')}` · **{pr.get('supervisor')}** — {pr.get('university')} "
-            f"({pr.get('province')}) · {pr.get('language')}", "",
+            f"({pr.get('province')}) · {pr.get('language')}"
+            + (f" · starts {pr.get('startDate')}" if pr.get("startDate") else ""), "",
             f"{m.rationale}", "",
+            f"*Search this title on Globalink:* `{pr.get('title')}`", "",
         ]
         if m.evidence:
             lines += ["**Evidence from your profile:**"] + [f"- {e}" for e in m.evidence] + [""]
