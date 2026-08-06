@@ -1,22 +1,21 @@
 """
-Knowledge-base corpus assembly.
+Splitting documents into passages.
 
-Ported from bideez `src/mastra/matching/corpus.ts` + `src/mastra/chunking.ts`.
+The rule: do NOT slice documents into fixed character windows. That cuts facts
+in half across boundaries and throws away the source anchors that quoting needs.
+Instead:
 
-The rule inherited from bideez: do NOT slice documents into fixed char windows.
-That severs facts across boundaries and throws away the provenance anchors that
-citations need. Instead:
-
-  - Walk the document's heading structure and pack whole sections into a unit
-    up to a char ceiling. Never split a section across units.
+  - Walk the document's heading structure and pack whole sections into a
+    passage, up to a character ceiling. Never split a section across passages.
   - A single section larger than the ceiling is the only case that gets hard
     split, with an overlap so a fact spanning the cut survives whole somewhere.
-  - Carry a provenance anchor ("Resume.pdf — part 2/3", "p.4") and a heading
-    breadcrumb so unit-local extraction inherits its section's meaning.
+  - Carry a source anchor ("Resume.pdf — part 2/3", "p.4") and a heading
+    breadcrumb, so a passage read on its own still inherits its section's
+    meaning.
 
-Every unit gets a stable citation id. Downstream, the model cites units by id
-and we resolve those ids back to real source rows — a cited id that does not
-resolve is dropped, exactly as bideez's GATHER step does.
+Every passage gets a stable id. The model cites passages by id and those ids are
+resolved back to real source text — a cited id that does not resolve is dropped
+rather than shown.
 """
 
 from __future__ import annotations
@@ -24,8 +23,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-# ~40K chars (~10-12K tokens) is the bideez ceiling. Kept here so a unit always
-# fits comfortably inside a worker call alongside its instructions.
+# ~12K chars (~3K tokens). Small enough that a passage always fits comfortably
+# inside one model call alongside its instructions.
 CHUNK_CEILING_CHARS = 12_000
 DOC_OVERLAP_CHARS = 800
 

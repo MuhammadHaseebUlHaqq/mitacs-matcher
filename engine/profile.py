@@ -1,22 +1,16 @@
 """
-Stage 0 — knowledge base → capability profile (MAP-REDUCE).
+Step 1 — documents → capability profile (map-reduce).
 
-This is Galt RAG's map-reduce with the query held fixed. Rather than asking a
-question, every unit of the user's knowledge base is read by the model and asked
-the same thing: *what does this passage prove this person can do?* The per-unit
-extracts are then folded by a real consolidation pass (bideez: "Concatenation is
-wrong — overlap and repeated boilerplate produce duplicates, and independent
-batches classify inconsistently") into one canonical profile.
+Every passage of the knowledge base is read by the model and asked the same
+question: *what does this passage prove this person can do?* The per-passage
+extracts are then folded into one profile by a real consolidation call.
 
-Why not embed the documents and retrieve? Same reason Galt RAG exists: retrieval
-by vector similarity cannot reason. A CV that says "kubeadm, Calico CNI, Helm"
-must match a project asking for "cloud-native orchestration experience", and
-"benchmarked vLLM against HuggingFace" must match "LLM serving systems" — those
-are inferences, not cosine neighbours. Here every token of the corpus is read, so
-relevance is judged rather than estimated.
+That fold is deliberately not string concatenation. Overlapping text and
+repeated boilerplate produce duplicate entries, and passages read independently
+classify the same skill inconsistently — a merge pass resolves both.
 
-Cost is O(number of KB units), not O(corpus size × queries): the profile is built
-once per knowledge base and cached, then reused for every match run.
+Cost is proportional to the number of passages, not to the corpus size: the
+profile is built once and cached, then reused for every match run.
 """
 
 from __future__ import annotations

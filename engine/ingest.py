@@ -1,14 +1,13 @@
 """
 Document ingestion — PDF / DOCX / Markdown / plain text → `Document`.
 
-bideez uses LlamaParse for this (`src/integrations/llamaparse.ts`), which
-returns page-anchored markdown. LlamaParse is a paid external API and this app
-is bring-your-own-key only, so we parse locally and keep the same *output
-contract*: text plus a title, with page breaks preserved as markdown-ish
-separators so `corpus.build_units` can still find structure.
+Parsing happens locally with ordinary libraries — no model call, no external
+service, nothing to pay for. Output contract: plain text plus a title, with page
+breaks kept as markdown-style separators so `corpus.build_units` can still find
+the document's structure.
 
-To swap in LlamaParse later, replace `parse_pdf` — nothing else depends on how
-the bytes became text.
+A hosted parser (for scanned PDFs, which pypdf cannot read) would slot in by
+replacing `parse_pdf` — nothing else depends on how the bytes became text.
 """
 
 from __future__ import annotations
@@ -99,9 +98,8 @@ def parse_text(data: bytes, title: str, kind: str = "text") -> Document:
 
 
 def parse_csv(data: bytes, title: str) -> Document:
-    """Render a CSV/TSV as markdown-ish rows. bideez ingests structured sources
-    (capabilities, bid history) alongside prose; the model reads them the same
-    way, so flattening to labelled rows is enough."""
+    """Render a CSV/TSV as markdown-style rows. The model reads a table the same
+    way it reads prose, so flattening to labelled rows is enough."""
     import csv as _csv
 
     for enc in ("utf-8-sig", "utf-8", "latin-1"):

@@ -1,14 +1,14 @@
 """
 Mitacs Matcher — FastAPI app.
 
-Bring-your-own-key, following Galt RAG: the provider key arrives from the
-browser on each request, is used for that request, and is never stored, cached,
-or logged. Two providers are supported — OpenRouter and Google Gemini — behind
-one `LLMConfig`.
+Bring-your-own-key: the provider key arrives from the browser on each request,
+is used for that request, and is never stored, cached, or logged. Two providers
+are supported — OpenRouter and Google Gemini — behind one `LLMConfig`.
 
-Knowledge bases persist to `data/kb/<session>.json` (parsed text + cached
-profile) so they survive a restart, mirroring how bideez keeps knowledge
-documents on the workspace row. Keys are never part of that file.
+The server keeps nothing between requests. The browser holds the parsed
+documents, the profile and the passage cache, and sends them with each call —
+the same way the key already worked. That is what lets this run on a host with
+no disk, and it means a shared deployment never holds anyone's CV.
 
 Endpoints
   GET  /                          landing page

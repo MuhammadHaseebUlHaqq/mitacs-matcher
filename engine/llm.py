@@ -1,10 +1,9 @@
 """
 LLM transport — OpenRouter and Google Gemini.
 
-Retry policy, error surfacing and the bring-your-own-key posture are ported from
-Galt RAG (`grag.py`): the key arrives per request, is used, and is never stored
-or logged. A call that gives up carries the provider's own reason so the
-pipeline can report WHY rather than silently degrading.
+Bring-your-own-key: the key arrives per request, is used, and is never stored
+or logged. A call that gives up carries the provider's own reason, so failures
+are reported rather than quietly degrading into worse results.
 
 Two providers behind one interface. Everything upstream (profile, matching)
 takes an `LLMConfig` and never learns which provider it is talking to.
@@ -99,11 +98,11 @@ def _error_message(r: httpx.Response, provider: str = "") -> str:
     return where
 
 
-# Longest we will wait on a single backoff. Galt RAG capped this at 5s to keep a
-# rate-limited free model from feeling hung. That is too aggressive here: Gemini
+# Longest we will wait on a single backoff. A short ceiling (5s) seems kinder —
+# it stops a rate-limited model from feeling hung — but it is wrong here: Gemini
 # free tiers are per-MINUTE (gemini-3.6-flash allows 5 req/min) and reply
 # "retry in 45s", so a 5s ceiling guarantees every retry is wasted and the whole
-# fan-out fails. Wait as long as the provider asks, up to this bound.
+# run fails. Wait as long as the provider asks, up to this bound.
 MAX_RETRY_WAIT = float(os.getenv("MAX_RETRY_WAIT", "50"))
 
 _RETRY_SECONDS = re.compile(r"(\d+(?:\.\d+)?)\s*s")

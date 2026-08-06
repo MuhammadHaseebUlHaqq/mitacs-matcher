@@ -1,26 +1,29 @@
 """
-Stage 1 — lexical recall filter (BM25-style, embeddings-free).
+Step 2 — the keyword filter (BM25, no embeddings).
 
-WHY THIS EXISTS, AND WHAT IT IS NOT
------------------------------------
-Galt RAG reads every token of the corpus for every query. That is affordable
-when the corpus is one person's documents. Here the candidate set is 3,359
-Mitacs projects (~12 MB); reading all of them on every run costs ~340 LLM calls
-per query even at a generous batch size. For an interactive UI that is too slow
-and, on a paid model, too expensive.
+WHY THIS EXISTS
+---------------
+Having the model read all 3,359 projects would cost hundreds of calls per run.
+That is too slow for an interactive app and too expensive on a paid model, and
+it is far past what a free API key allows. So this step narrows the field to a
+few dozen candidates before any model call happens. It is pure arithmetic:
+free, and a few milliseconds per run.
 
-So this stage narrows the field before the model does the judging. Two rules
-keep it honest:
+TWO RULES KEEP IT HONEST
+------------------------
+  1. It never ranks. It decides only which projects the model gets to see. Its
+     score is discarded by the caller; every number the user sees comes from
+     the judge.
+  2. It is not vector similarity. No embeddings, no cosine, no index. Just term
+     matching with IDF weighting, so any project's inclusion or omission can be
+     explained by pointing at the words that matched.
 
-  1. It is NOT a relevance verdict. It is a *recall* filter, tuned to over-admit.
-     Nothing here decides ranking — every survivor is still read and judged by
-     the model in Stage 2, and the scores the user sees come only from there.
-  2. It is NOT vector similarity. No embeddings, no cosine, no ANN index. It is
-     transparent term matching with IDF weighting, so any admission or omission
-     can be explained by pointing at the terms that fired.
-
-Set `width=0` to disable it entirely and put every project through the model —
-the faithful-to-Galt-RAG setting, available to anyone willing to pay for it.
+WHAT IT COSTS
+-------------
+Matching on words means it cannot match on meaning. A project describing the
+same work in vocabulary the profile never uses scores zero and is dropped
+before the model sees it. Widening `width` is the dial that trades model calls
+for coverage.
 """
 
 from __future__ import annotations
