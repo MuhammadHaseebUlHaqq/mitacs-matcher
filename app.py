@@ -141,6 +141,16 @@ async def stylesheet() -> FileResponse:
     return FileResponse(ROOT / "static" / "brutal.css", media_type="text/css")
 
 
+# `/favicon.ico` is served the same SVG. The pages declare the icon explicitly,
+# so a browser that honours the link never asks for the .ico — but crawlers and
+# some clients request it regardless, and answering is cheaper than the 404s it
+# otherwise leaves in the logs.
+@app.get("/favicon.svg")
+@app.get("/favicon.ico")
+async def favicon() -> FileResponse:
+    return FileResponse(ROOT / "static" / "favicon.svg", media_type="image/svg+xml")
+
+
 @app.get("/api/health")
 async def health() -> dict:
     return {

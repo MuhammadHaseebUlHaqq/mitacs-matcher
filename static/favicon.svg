@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!--
+    The brand mark at tab size. A solid accent tile rather than a transparent
+    glyph: browser tab strips are light in one theme and dark in the other, and
+    a filled square is the only thing that keeps contrast in both.
+
+    The M and the underscore are paths, not <text> — a favicon cannot rely on a
+    font being installed, and a missing font would render this as a blank tile.
+  -->
+  <rect width="32" height="32" fill="#f2590d"/>
+  <path d="M7 24V9l9 9 9-9v15"
+        fill="none" stroke="#0a0a0a" stroke-width="4"
+        stroke-linecap="square" stroke-linejoin="miter"/>
+  <!-- The accent underscore from MITACS_MATCHER, inverted out of the tile. -->
+  <rect x="7" y="26" width="18" height="3" fill="#0a0a0a"/>
+</svg>
