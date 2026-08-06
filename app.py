@@ -141,6 +141,13 @@ async def stylesheet() -> FileResponse:
     return FileResponse(ROOT / "static" / "brutal.css", media_type="text/css")
 
 
+# Both pages load this, so the PostHog config lives in one file rather than
+# being pasted twice and drifting.
+@app.get("/analytics.js")
+async def analytics() -> FileResponse:
+    return FileResponse(ROOT / "static" / "analytics.js", media_type="application/javascript")
+
+
 # `/favicon.ico` is served the same SVG. The pages declare the icon explicitly,
 # so a browser that honours the link never asks for the .ico — but crawlers and
 # some clients request it regardless, and answering is cheaper than the 404s it

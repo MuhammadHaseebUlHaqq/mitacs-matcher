@@ -7,6 +7,7 @@
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/favicon.svg">
 <link rel="stylesheet" href="/brutal.css">
+<script src="/analytics.js"></script>
 <style>
   body { background-image: none; }
   .app { display: grid; grid-template-columns: 380px 1fr; min-height: 100vh; }
@@ -131,7 +132,11 @@
       </div>
       <div class="field">
         <label class="lab" id="keyLab">OpenRouter API key</label>
-        <input id="key" type="password" autocomplete="off" placeholder="sk-or-…">
+        <!-- ph-no-capture: belongs here even though analytics.js disables
+             autocapture outright. If that is ever relaxed, this field is the one
+             thing that must still never be read, and the guarantee should live
+             on the input rather than in a config file two directories away. -->
+        <input id="key" type="password" autocomplete="off" placeholder="sk-or-…" class="ph-no-capture">
       </div>
       <div class="field">
         <label class="lab">Model</label>
@@ -296,11 +301,22 @@ function setProvider(p) {
   loadModels();
   sync();
 }
-$("p-or").onclick = () => setProvider("openrouter");
-$("p-gm").onclick = () => setProvider("gemini");
+$("p-or").onclick = () => { track("provider_selected", { provider: "openrouter" }); setProvider("openrouter"); };
+$("p-gm").onclick = () => { track("provider_selected", { provider: "gemini" }); setProvider("gemini"); };
+
+/* Fires once, the first time a key is present in this session. The event is the
+   fact that a key was entered — the value is never read. This is the step most
+   people drop out at, so it needs to be in the funnel. */
+let KEY_SEEN = false;
+function noteKey() {
+  if (KEY_SEEN || !$("key").value.trim()) return;
+  KEY_SEEN = true;
+  track("api_key_entered", { provider: PROVIDER });
+}
 
 $("key").addEventListener("input", () => {
   sessionStorage.setItem(keyStoreName(PROVIDER), $("key").value);
+  noteKey();
   sync();
   if (PROVIDER === "gemini") loadModels();
 });
@@ -395,8 +411,20 @@ async function upload(files) {
     const r = await api("/api/kb", { method: "POST", body: fd });
     addDocs(r.documents);
     const bad = r.documents.filter(d => d.error).length;
+    // Counts and file kinds only. No titles, no text — a filename is often the
+    // person's own name.
+    track("documents_added", {
+      method: "upload",
+      count: r.documents.length,
+      failed: bad,
+      kinds: [...new Set(r.documents.map(d => d.kind))].sort(),
+      total_chars: r.documents.reduce((n, d) => n + (d.chars || 0), 0),
+    });
     msg(bad ? `${bad} file(s) could not be read — see the list.` : "");
-  } catch (e) { msg(e.message, "bad"); }
+  } catch (e) {
+    track("documents_failed", { method: "upload", reason: errClass(e.message) });
+    msg(e.message, "bad");
+  }
 }
 $("drop").onclick = () => $("file").click();
 $("file").onchange = e => { upload(e.target.files); e.target.value = ""; };
@@ -412,9 +440,16 @@ $("pasteSave").onclick = async () => {
       body: JSON.stringify({ title: $("pasteTitle").value, text: $("pasteText").value }),
     });
     addDocs(r.documents);
+    track("documents_added", {
+      method: "paste", count: r.documents.length, failed: 0, kinds: ["text"],
+      total_chars: r.documents.reduce((n, d) => n + (d.chars || 0), 0),
+    });
     $("pasteTitle").value = ""; $("pasteText").value = "";
     $("pasteBox").classList.add("hidden"); msg("");
-  } catch (e) { msg(e.message, "bad"); }
+  } catch (e) {
+    track("documents_failed", { method: "paste", reason: errClass(e.message) });
+    msg(e.message, "bad");
+  }
 };
 $("clearKb").onclick = () => {
   DOCS = []; PROFILE = null; EXTRACT_CACHE = {}; LAST_RUN = null;
@@ -424,6 +459,14 @@ $("clearKb").onclick = () => {
 /* ---- stage 0 ----------------------------------------------------------- */
 $("build").onclick = async () => {
   BUSY = true; sync(); msg("Reading every passage of the knowledge base…");
+  // Wall-clock, not just success/failure: a build that takes four minutes on a
+  // throttled free tier is a retention problem even when it works.
+  const t0 = performance.now();
+  const resuming = Object.keys(EXTRACT_CACHE).length > 0;
+  track("profile_build_started", {
+    provider: PROVIDER, model: $("model").value.trim() || "default",
+    documents: DOCS.filter(d => !d.error).length, resuming,
+  });
   try {
     const r = await api("/api/profile", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -436,12 +479,27 @@ $("build").onclick = async () => {
     EXTRACT_CACHE = r.extractCache || EXTRACT_CACHE;
     saveWorkspace();
     const m = r.meta;
+    track("profile_built", {
+      provider: m.provider, model: m.model,
+      units: m.units, hits: m.hits, failed: m.failed, cached: m.cached,
+      reduce_layers: m.reduceLayers, partial: !!m.warning,
+      duration_ms: Math.round(performance.now() - t0),
+    });
     $("pmeta").textContent =
       `${m.hits}/${m.units} passages used` +
       (m.cached ? ` (${m.cached} reused)` : "") +
       ` · ${m.reduceLayers} reduce layer(s)`;
     msg(m.warning || "");
   } catch (e) {
+    track("profile_build_failed", {
+      provider: PROVIDER, model: $("model").value.trim() || "default",
+      reason: errClass(e.message),
+      // Whether the failed attempt still banked passages decides if the retry
+      // is cheap, which is the thing worth knowing when this shows up in the
+      // funnel as a drop-off.
+      salvaged: e.extractCache ? Object.keys(e.extractCache).length : 0,
+      duration_ms: Math.round(performance.now() - t0),
+    });
     msg(e.message, "bad");
     // A failed build still banks the passages that succeeded; keep them so the
     // retry resumes instead of re-spending quota.
@@ -464,6 +522,13 @@ $("run").onclick = async () => {
 
   const width = +$("width").value;
   const calls = Math.ceil(width / JUDGE_BATCH);
+  const t0 = performance.now();
+  const provinces = [...$("prov").selectedOptions].map(o => o.value);
+  track("match_started", {
+    provider: PROVIDER, model: $("model").value.trim() || "default",
+    width, top_n: +$("topN").value, expected_calls: calls,
+    provinces_count: provinces.length, filtered: provinces.length > 0,
+  });
   // One request now, so progress is stated up front rather than streamed back.
   logLine(`Filtering ${(HEALTH?.projects ?? 3359).toLocaleString()} projects by term overlap…`);
   logLine(`Reading the top ${width} in ${calls} model calls. This takes a minute or two.`);
@@ -474,14 +539,34 @@ $("run").onclick = async () => {
       body: JSON.stringify({
         provider: PROVIDER, model: $("model").value.trim() || undefined,
         topN: +$("topN").value, width,
-        provinces: [...$("prov").selectedOptions].map(o => o.value),
+        provinces,
         profile: PROFILE,
       }),
     });
     logLine(`Scored ${r.stats.judged} projects. Done.`);
     LAST_RUN = r;
+    // Scores but never titles: the top score says whether the run was worth
+    // anything to this person, which is the outcome metric. Which project they
+    // matched with is theirs.
+    track("match_completed", {
+      provider: PROVIDER, model: $("model").value.trim() || "default",
+      width, top_n: +$("topN").value,
+      pool_size: r.stats.poolSize, screened: r.stats.screened, judged: r.stats.judged,
+      judge_calls: r.stats.judgeCalls, failed_judge: r.stats.failedJudge,
+      matches: r.matches.length,
+      top_score: r.matches.length ? r.matches[0].score : null,
+      degraded: !!r.warning,
+      duration_ms: Math.round(performance.now() - t0),
+    });
     render(r);
-  } catch (e) { msg(e.message, "bad"); logLine("Failed: " + e.message); }
+  } catch (e) {
+    track("match_failed", {
+      provider: PROVIDER, model: $("model").value.trim() || "default",
+      width, reason: errClass(e.message),
+      duration_ms: Math.round(performance.now() - t0),
+    });
+    msg(e.message, "bad"); logLine("Failed: " + e.message);
+  }
   BUSY = false; sync();
 };
 
@@ -527,7 +612,7 @@ function render(r) {
           ${section("Student role", p.studentRoles)}
           ${section("Required skills / background", p.studentSkills)}
           <div class="acts">
-            <button class="btn-ghost go" data-title="${esc(p.title)}">Open on Globalink</button>
+            <button class="btn-ghost go" data-title="${esc(p.title)}" data-rank="${m.rank}" data-score="${m.score}">Open on Globalink</button>
             <button class="btn-ghost cp" data-title="${esc(p.title)}">Copy title</button>
           </div>
           <p class="hint" style="margin-top:8px">
@@ -578,6 +663,9 @@ function wireCards() {
   });
 
   $("out").querySelectorAll("button.go").forEach(b => b.onclick = async () => {
+    // The strongest signal the tool worked: someone took a result to the actual
+    // portal. Rank only — the title is the project they are applying to.
+    track("project_opened", { rank: +b.dataset.rank || null, score: +b.dataset.score || null });
     const ok = await copyText(b.dataset.title);
     flash(b, ok ? "Title copied — paste in Keyword search" : "Copy failed — copy the title manually");
     window.open(GLOBALINK, "_blank", "noopener");
@@ -597,10 +685,14 @@ $("exp").onclick = async () => {
         ...LAST_RUN, provider: PROVIDER, model: $("model").value.trim() || undefined,
       }),
     });
+    track("export_downloaded", { matches: LAST_RUN.matches.length });
     const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown" }));
     Object.assign(document.createElement("a"), { href: url, download: "mitacs-matches.md" }).click();
     URL.revokeObjectURL(url);
-  } catch (e) { msg(e.message, "bad"); }
+  } catch (e) {
+    track("export_failed", { reason: errClass(e.message) });
+    msg(e.message, "bad");
+  }
 };
 
 /* ---- boot -------------------------------------------------------------- */
@@ -612,6 +704,15 @@ $("exp").onclick = async () => {
   setProvider(PROVIDER);
   loadWorkspace();
   renderKb();
+  // Separates first-timers from people coming back to a workspace they already
+  // built — the two behave nothing alike in the funnel and would otherwise be
+  // averaged together.
+  track("app_opened", {
+    returning: DOCS.length > 0 || !!PROFILE,
+    has_profile: !!PROFILE,
+    documents: DOCS.length,
+    provider: PROVIDER,
+  });
   if (PROFILE) msg("Workspace restored from this browser — your profile is ready to match.", "warn");
   updatePlan();
 })();

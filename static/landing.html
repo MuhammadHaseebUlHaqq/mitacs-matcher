@@ -7,6 +7,7 @@
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/favicon.svg">
 <link rel="stylesheet" href="/brutal.css">
+<script src="/analytics.js"></script>
 <style>
   nav {
     border-bottom: 2px solid var(--line);
@@ -158,7 +159,7 @@
       <a href="#how">How it works</a>
       <a href="#why">Why not search</a>
       <a href="#faq">FAQ</a>
-      <a class="launch" href="/app">Launch</a>
+      <a class="launch" href="/app" data-cta="nav">Launch</a>
     </div>
   </div>
 </nav>
@@ -173,10 +174,10 @@
       own CV earned it.
     </p>
     <div class="cta">
-      <a class="btn" href="/app"><span class="ico">&rarr;</span><span class="lbl">Find my projects</span></a>
-      <a class="btn-ghost" href="#how" style="text-decoration:none;display:inline-block">See how it works</a>
+      <a class="btn" href="/app" data-cta="hero"><span class="ico">&rarr;</span><span class="lbl">Find my projects</span></a>
+      <a class="btn-ghost" href="#how" data-cta="how" style="text-decoration:none;display:inline-block">See how it works</a>
     </div>
-    <p class="sub">Runs on your own machine · your documents never leave it</p>
+    <p class="sub">Your own API key · no account · nothing stored on the server</p>
   </div>
 </header>
 
@@ -266,7 +267,11 @@
     <div class="marker reveal">// QUESTIONS <span style="margin-left:auto">005</span></div>
     <div class="faq reveal">
       <h3>Where do my documents go?</h3>
-      <p>Nowhere. The whole thing runs on your own machine, and your files are only ever sent to the AI provider you choose with your own key. There is no account and no server holding your CV.</p>
+      <p>Your files are read once to pull the text out, and the text is handed straight back to your browser, which is where it stays. The server keeps no copy, there is no database, and there is no account. From there your text is only ever sent to the AI provider you picked, using your own key.</p>
+    </div>
+    <div class="faq reveal">
+      <h3>Do you track anything?</h3>
+      <p>Page visits and which buttons get pressed, so we can see whether the tool is actually useful to people. It is counts only — how many documents, how long a run took, whether it succeeded. No session recording, no reading of your documents, and never your API key. Your CV content is not part of it.</p>
     </div>
     <div class="faq reveal">
       <h3>Do I need to pay for anything?</h3>
@@ -289,7 +294,7 @@
       <p>No. It produces your shortlist and an exportable summary. You still apply through the Mitacs portal yourself, and you still need at least three different provinces across your choices.</p>
     </div>
     <div class="reveal" style="margin-top:34px">
-      <a class="btn" href="/app"><span class="ico">&rarr;</span><span class="lbl">Find my projects</span></a>
+      <a class="btn" href="/app" data-cta="faq"><span class="ico">&rarr;</span><span class="lbl">Find my projects</span></a>
     </div>
   </div>
 </section>
@@ -298,7 +303,7 @@
   <div class="wrap">
     <span>MITACS_MATCHER</span>
     <span class="spacer"></span>
-    <span>RUNS LOCALLY</span>
+    <span>NO ACCOUNT</span>
     <span>·</span>
     <span>YOUR OWN API KEY</span>
     <span>·</span>
@@ -307,6 +312,28 @@
 </footer>
 
 <script>
+/* ---- CTA tracking -------------------------------------------------------- */
+/* Which call-to-action people actually press. Delegated so adding another
+   button later means adding one attribute, not another listener. The label sent
+   is our own `data-cta` value, never the element's text. */
+document.addEventListener("click", function (e) {
+  var a = e.target.closest("[data-cta]");
+  if (a) track("cta_click", { location: a.dataset.cta, target: a.getAttribute("href") });
+});
+
+/* How far down the page people get. Fires once per depth, so the counts read as
+   "reached 50%" rather than as a scroll firehose. */
+(function () {
+  var marks = [25, 50, 75, 100], hit = {};
+  addEventListener("scroll", function () {
+    var h = document.documentElement;
+    var pct = (h.scrollTop + innerHeight) / h.scrollHeight * 100;
+    marks.forEach(function (m) {
+      if (pct >= m && !hit[m]) { hit[m] = 1; track("scroll_depth", { depth: m }); }
+    });
+  }, { passive: true });
+})();
+
 fetch("/api/health").then(r => r.json()).then(h => {
   var el = document.getElementById("n-projects");
   el.dataset.target = h.projects.toLocaleString();
