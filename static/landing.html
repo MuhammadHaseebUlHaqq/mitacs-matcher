@@ -148,6 +148,17 @@
   footer { padding: 34px 0; font-size: 12px; color: var(--dim); }
   footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
   footer .spacer { flex: 1; }
+
+  /* Attribution sits on its own line under the claims — it is a different kind
+     of statement and reads badly jammed in among them. */
+  footer .by { margin-top: 14px; }
+  footer .by a {
+    color: var(--dim);
+    font-weight: 700;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  footer .by a:hover { color: var(--fg); }
 </style>
 </head>
 <body>
@@ -308,6 +319,16 @@
     <span>YOUR OWN API KEY</span>
     <span>·</span>
     <span>NOT AFFILIATED WITH MITACS</span>
+  </div>
+  <!-- No data-cta here on purpose. That attribute feeds `cta_click`, which is a
+       funnel step meaning "someone headed for the app" — counting a click on my
+       GitHub as one would inflate it and make the funnel lie. -->
+  <div class="wrap by">
+    <span>BUILT BY MUHAMMAD HASEEB UL HAQ</span>
+    <span>·</span>
+    <a href="https://github.com/MuhammadHaseebUlHaqq" target="_blank" rel="noopener">GITHUB</a>
+    <span>·</span>
+    <a href="https://www.linkedin.com/in/mhaseebulhaq/" target="_blank" rel="noopener">LINKEDIN</a>
   </div>
 </footer>
 
