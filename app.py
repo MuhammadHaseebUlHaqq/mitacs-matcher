@@ -28,22 +28,19 @@ Endpoints
 
 from __future__ import annotations
 
-import asyncio
 import gzip
 import json
 import os
 import uuid
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from fastapi import Body, FastAPI, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 
-from engine import store
 from engine.corpus import Document, assemble
 from engine.ingest import from_pasted_text, ingest
 from engine.llm import DEFAULT_MODELS, MAX_CONCURRENCY, PROVIDERS, LLMConfig, list_models
-from engine.matching import JUDGE_BATCH_SIZE, MAP_BATCH_SIZE, MatchRun, run_matching
+from engine.matching import JUDGE_BATCH_SIZE, MatchRun, run_matching
 from engine.prefilter import Prefilter
 from engine.profile import build_profile, render_profile
 
@@ -53,6 +50,12 @@ ROOT = Path(__file__).parent
 # local scrape drops in without a re-zip.
 DATA = ROOT / "data" / "projects.json"
 DATA_GZ = ROOT / "data" / "projects.json.gz"
+
+# How many projects survive the lexical filter and get read by the model. This
+# single number is the cost of a run: at JUDGE_BATCH_SIZE 6 it decides the call
+# count, the wall-clock time, and how much of the user's free quota a match
+# spends. 60 costs ~10 calls.
+DEFAULT_WIDTH = int(os.getenv("DEFAULT_WIDTH", "60"))
 
 app = FastAPI(title="Mitacs Matcher")
 
@@ -71,43 +74,39 @@ PREFILTER = Prefilter(PROJECTS) if PROJECTS else None
 
 
 # --------------------------------------------------------------------------- #
-# Session state — in memory, backed by the on-disk store
+# Session state — there is none
 # --------------------------------------------------------------------------- #
-@dataclass
-class Session:
-    docs: dict[str, Document] = field(default_factory=dict)
-    profile: dict | None = None
-    profile_meta: dict = field(default_factory=dict)
-    extract_cache: dict = field(default_factory=dict)
-    last_run: MatchRun | None = None
-    last_params: dict = field(default_factory=dict)
+# The server holds nothing between requests. The browser owns the workspace:
+# parsed document text and the built profile live in its localStorage and travel
+# with each request, exactly as the API key already did. Two things fall out of
+# that. It runs unchanged on a host with no persistent disk, and a shared
+# deployment cannot leak one user's CV to another because it never has it.
+#
+# The cost is that a request carries more: a profile is a few KB, and the parsed
+# text of a CV is tens of KB. Both are far below any practical body limit.
 
 
-SESSIONS: dict[str, Session] = {}
-# job id -> (event queue, running task). The task handle is what makes a run
-# cancellable; without it a mistaken 3,000-project run has to be waited out.
-JOBS: dict[str, tuple[asyncio.Queue, asyncio.Task]] = {}
+def _documents_from(body: dict) -> list[Document]:
+    """Rebuild the knowledge base from what the client sent.
 
-
-def session_for(sid: str | None) -> Session:
-    if not sid:
-        raise HTTPException(400, "Missing X-Session-Id header.")
-    if sid not in SESSIONS:
-        loaded = store.load(sid)
-        SESSIONS[sid] = Session(
-            docs=loaded["docs"], profile=loaded["profile"],
-            profile_meta=loaded["profile_meta"], extract_cache=loaded["extract_cache"],
-        )
-    return SESSIONS[sid]
-
-
-def persist(sid: str, s: Session) -> None:
-    try:
-        store.save(sid, s.docs, s.profile, s.profile_meta, s.extract_cache)
-    except OSError:
-        # Persistence is a convenience; never fail a request because the disk
-        # store could not be written.
-        pass
+    Text arrives already parsed — extraction happened server-side at upload and
+    the result was handed back to the browser to keep.
+    """
+    out: list[Document] = []
+    for d in body.get("documents") or []:
+        if not isinstance(d, dict):
+            continue
+        text = str(d.get("text") or "")
+        if not text.strip():
+            continue
+        out.append(Document(
+            id=str(d.get("id") or uuid.uuid4().hex[:12]),
+            title=str(d.get("title") or "untitled"),
+            text=text,
+            kind=str(d.get("kind") or "text"),
+            error=str(d.get("error") or ""),
+        ))
+    return out
 
 
 def config_from(provider: str | None, key: str | None, model: str | None) -> LLMConfig:
@@ -163,70 +162,27 @@ async def models(provider: str = "openrouter", x_api_key: str | None = Header(No
 # --------------------------------------------------------------------------- #
 # Knowledge base
 # --------------------------------------------------------------------------- #
-def _doc_view(d: Document) -> dict:
-    return {"id": d.id, "title": d.title, "kind": d.kind, "chars": len(d.text), "error": d.error}
-
-
-def _kb_view(s: Session) -> dict:
-    docs = [_doc_view(d) for d in s.docs.values()]
-    return {
-        "documents": docs,
-        "hasProfile": s.profile is not None,
-        "profileMeta": s.profile_meta,
-        "totalChars": sum(d["chars"] for d in docs),
-        "readable": sum(1 for d in docs if not d["error"]),
-        # How much of a previous (possibly rate-limited) build carried over.
-        "cachedPassages": len(s.extract_cache),
-    }
-
-
-@app.get("/api/kb")
-async def kb_list(x_session_id: str | None = Header(None)) -> dict:
-    return _kb_view(session_for(x_session_id))
+def _doc_payload(d: Document) -> dict:
+    """A parsed document, including its text — the client stores this and sends
+    it back, so the text has to go out with it."""
+    return {"id": d.id, "title": d.title, "kind": d.kind, "text": d.text,
+            "chars": len(d.text), "error": d.error}
 
 
 @app.post("/api/kb")
-async def kb_upload(files: list[UploadFile], x_session_id: str | None = Header(None)) -> dict:
-    s = session_for(x_session_id)
-    for f in files:
-        doc = ingest(f.filename or "untitled", await f.read())
-        s.docs[doc.id] = doc
-    # New material invalidates the consolidated profile, but NOT the per-passage
-    # extract cache — it is keyed by content, so passages that did not change are
-    # still valid and must not be re-read.
-    s.profile, s.profile_meta = None, {}
-    persist(x_session_id or "", s)
-    return _kb_view(s)
+async def kb_upload(files: list[UploadFile]) -> dict:
+    """Parse uploads and hand the text straight back. Nothing is retained."""
+    return {"documents": [
+        _doc_payload(ingest(f.filename or "untitled", await f.read())) for f in files
+    ]}
 
 
 @app.post("/api/kb/text")
-async def kb_paste(body: dict = Body(...), x_session_id: str | None = Header(None)) -> dict:
-    s = session_for(x_session_id)
+async def kb_paste(body: dict = Body(...)) -> dict:
     doc = from_pasted_text(body.get("title") or "Pasted note", body.get("text") or "")
     if doc.error:
         raise HTTPException(400, doc.error)
-    s.docs[doc.id] = doc
-    s.profile, s.profile_meta = None, {}
-    persist(x_session_id or "", s)
-    return _kb_view(s)
-
-
-@app.delete("/api/kb/{doc_id}")
-async def kb_delete(doc_id: str, x_session_id: str | None = Header(None)) -> dict:
-    s = session_for(x_session_id)
-    s.docs.pop(doc_id, None)
-    s.profile, s.profile_meta = None, {}
-    persist(x_session_id or "", s)
-    return _kb_view(s)
-
-
-@app.delete("/api/kb")
-async def kb_clear(x_session_id: str | None = Header(None)) -> dict:
-    s = session_for(x_session_id)
-    s.docs.clear()
-    s.profile, s.profile_meta, s.extract_cache = None, {}, {}
-    store.clear(x_session_id or "")
-    return _kb_view(s)
+    return {"documents": [_doc_payload(doc)]}
 
 
 # --------------------------------------------------------------------------- #
@@ -235,33 +191,35 @@ async def kb_clear(x_session_id: str | None = Header(None)) -> dict:
 @app.post("/api/profile")
 async def profile_build(
     body: dict = Body(default={}),
-    x_session_id: str | None = Header(None),
     x_api_key: str | None = Header(None),
 ) -> dict:
-    s = session_for(x_session_id)
     cfg = config_from(body.get("provider"), x_api_key, body.get("model"))
 
-    usable = [d for d in s.docs.values() if not d.error and d.text.strip()]
+    usable = [d for d in _documents_from(body) if not d.error and d.text.strip()]
     if not usable:
-        raise HTTPException(400, "No readable documents in the knowledge base.")
+        raise HTTPException(400, "No readable documents were sent.")
 
-    result = await build_profile(assemble(usable), cfg, cache=s.extract_cache)
+    # The per-passage extract cache rides along with the request too, so a build
+    # stopped by a rate limit still resumes where it left off rather than
+    # re-spending quota on passages that already succeeded.
+    cache = body.get("extractCache") if isinstance(body.get("extractCache"), dict) else {}
+    result = await build_profile(assemble(usable), cfg, cache=cache)
 
-    # Keep whatever was read, even on a failed build: the next attempt resumes
-    # from here instead of re-spending quota on passages that already succeeded.
-    s.extract_cache = result.cache
     if result.is_empty:
-        persist(x_session_id or "", s)
-        raise HTTPException(422, result.warning or "No profile information could be extracted.")
+        # Hand the partial cache back regardless — it is what makes the retry cheap.
+        return JSONResponse(
+            status_code=422,
+            content={"detail": result.warning or "No profile information could be extracted.",
+                     "extractCache": result.cache},
+        )
 
-    s.profile = result.profile
-    s.profile_meta = {
+    meta = {
         "units": result.n_units, "hits": result.n_hits, "failed": result.n_failed,
         "cached": result.n_cached, "reduceLayers": result.reduce_layers,
         "warning": result.warning, "model": cfg.model, "provider": cfg.provider,
     }
-    persist(x_session_id or "", s)
-    return {"profile": result.profile, "meta": s.profile_meta, "rendered": render_profile(result.profile)}
+    return {"profile": result.profile, "meta": meta, "extractCache": result.cache,
+            "rendered": render_profile(result.profile)}
 
 
 # --------------------------------------------------------------------------- #
@@ -279,82 +237,43 @@ def _filtered_projects(body: dict) -> list[dict]:
 
 
 @app.post("/api/match")
-async def match_start(
+async def match(
     body: dict = Body(default={}),
-    x_session_id: str | None = Header(None),
     x_api_key: str | None = Header(None),
 ) -> dict:
-    s = session_for(x_session_id)
+    """Filter, judge and rank — in one request.
+
+    This used to be a job: a background task pushing progress over SSE, because
+    a run was ~101 model calls and no browser waits that long on one response.
+    Collapsing the pipeline to a single judge pass (~10 calls, well under a
+    minute) removed the reason for that machinery, and with it the in-memory job
+    registry that made the app impossible to run on more than one instance.
+    """
     cfg = config_from(body.get("provider"), x_api_key, body.get("model"))
-    if not s.profile:
+
+    profile = body.get("profile")
+    if not isinstance(profile, dict) or not profile:
         raise HTTPException(400, "Build the capability profile first.")
 
-    top_n = max(1, min(int(body.get("topN") or 50), 200))
-    width = int(body.get("width", 400))
+    top_n = max(1, min(int(body.get("topN") or 20), 100))
+    width = int(body.get("width", DEFAULT_WIDTH))
 
     pool = _filtered_projects(body)
     if not pool:
         raise HTTPException(400, "No projects match those filters.")
 
-    job_id = uuid.uuid4().hex[:12]
-    queue: asyncio.Queue = asyncio.Queue()
+    # Narrow before spending anything. Every survivor is read by the model, so
+    # this width is the entire cost control.
+    if width > 0 and PREFILTER is not None:
+        if len(pool) == len(PROJECTS):
+            screened = [PROJECTS[i] for i, _ in PREFILTER.rank(profile, width)]
+        else:
+            screened = [pool[i] for i, _ in Prefilter(pool).rank(profile, width)]
+    else:
+        screened = pool
 
-    async def work() -> None:
-        def note(m: str) -> None:
-            queue.put_nowait({"type": "progress", "message": m})
-
-        try:
-            # Say up front how much work this is. On a free tier the request
-            # count, not the token count, is the limit that bites.
-            screened_n = width if width > 0 else len(pool)
-            screened_n = min(screened_n, len(pool))
-            est_map = -(-screened_n // MAP_BATCH_SIZE)
-            est_judge = -(-min(screened_n, max(int(top_n * 2.5), 24)) // JUDGE_BATCH_SIZE)
-            note(f"Plan: ~{est_map + est_judge} model calls "
-                 f"({est_map} screening + up to {est_judge} judging), "
-                 f"{MAX_CONCURRENCY} at a time.")
-
-            if width > 0 and PREFILTER is not None:
-                note(f"Narrowing {len(pool)} projects to the top {width} by term overlap…")
-                if len(pool) == len(PROJECTS):
-                    screened = [PROJECTS[i] for i, _ in PREFILTER.rank(s.profile or {}, width)]
-                else:
-                    sub = Prefilter(pool)
-                    screened = [pool[i] for i, _ in sub.rank(s.profile or {}, width)]
-            else:
-                note(f"Exhaustive mode — every one of {len(pool)} projects will be read.")
-                screened = pool
-
-            result = await run_matching(
-                render_profile(s.profile or {}), screened, cfg, top_n, progress=note,
-            )
-            s.last_run = result
-            s.last_params = {"topN": top_n, "width": width, "model": cfg.model,
-                             "provider": cfg.provider, "poolSize": len(pool)}
-            queue.put_nowait({"type": "done", "result": _run_view(result, len(pool))})
-        except asyncio.CancelledError:
-            queue.put_nowait({"type": "error", "message": "Run cancelled."})
-            raise
-        except Exception as e:  # noqa: BLE001 — report, never swallow
-            queue.put_nowait({"type": "error", "message": f"{type(e).__name__}: {e}"})
-        finally:
-            queue.put_nowait({"type": "_eof"})
-            # If the browser never opens the SSE stream (tab closed mid-run), the
-            # stream handler never gets to pop this job. Reap it so a long-lived
-            # server does not accumulate finished queues.
-            asyncio.get_running_loop().call_later(300, JOBS.pop, job_id, None)
-
-    JOBS[job_id] = (queue, asyncio.create_task(work()))
-    return {"jobId": job_id}
-
-
-@app.post("/api/match/{job_id}/cancel")
-async def match_cancel(job_id: str) -> dict:
-    entry = JOBS.get(job_id)
-    if entry is None:
-        raise HTTPException(404, "Unknown job.")
-    entry[1].cancel()
-    return {"cancelled": True}
+    run = await run_matching(render_profile(profile), screened, cfg, top_n)
+    return _run_view(run, len(pool))
 
 
 def _run_view(run: MatchRun, pool_size: int) -> dict:
@@ -365,59 +284,37 @@ def _run_view(run: MatchRun, pool_size: int) -> dict:
             for i, m in enumerate(run.matches)
         ],
         "stats": {
-            "poolSize": pool_size, "screened": run.n_screened,
-            "candidates": run.n_candidates, "judged": run.n_judged,
-            "mapCalls": run.map_calls, "judgeCalls": run.judge_calls,
-            "failedMap": run.n_failed_map, "failedJudge": run.n_failed_judge,
+            "poolSize": pool_size, "screened": run.n_screened, "judged": run.n_judged,
+            "judgeCalls": run.judge_calls, "failedJudge": run.n_failed_judge,
             "droppedIds": run.dropped_ids,
         },
         "warning": run.warning,
     }
 
 
-@app.get("/api/match/{job_id}/events")
-async def match_events(job_id: str) -> StreamingResponse:
-    entry = JOBS.get(job_id)
-    if entry is None:
-        raise HTTPException(404, "Unknown job.")
-    queue = entry[0]
-
-    async def stream():
-        try:
-            while True:
-                event = await queue.get()
-                if event.get("type") == "_eof":
-                    break
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-        finally:
-            JOBS.pop(job_id, None)
-
-    return StreamingResponse(
-        stream(), media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
 # --------------------------------------------------------------------------- #
 # Export
 # --------------------------------------------------------------------------- #
 @app.post("/api/export")
-async def export(x_session_id: str | None = Header(None)) -> JSONResponse:
-    s = session_for(x_session_id)
-    if not s.last_run or not s.last_run.matches:
+async def export(body: dict = Body(default={})) -> JSONResponse:
+    """Render a finished run as markdown. The run travels in the body — the
+    server kept no copy of it."""
+    matches = body.get("matches") or []
+    if not matches:
         raise HTTPException(400, "Nothing to export — run a match first.")
 
-    p = s.last_params
+    stats = body.get("stats") or {}
     lines = [
         "# Mitacs project matches",
         "",
-        f"*{len(s.last_run.matches)} projects, ranked. "
-        f"Screened {s.last_run.n_screened} of {p.get('poolSize', len(PROJECTS))} · "
-        f"{p.get('provider')} `{p.get('model')}`.*",
+        f"*{len(matches)} projects, ranked. "
+        f"Read {stats.get('screened', len(matches))} of "
+        f"{stats.get('poolSize', len(PROJECTS))} · "
+        f"{body.get('provider')} `{body.get('model')}`.*",
         "",
     ]
-    if s.last_run.warning:
-        lines += [f"> ⚠️ {s.last_run.warning}", ""]
+    if body.get("warning"):
+        lines += [f"> ⚠️ {body['warning']}", ""]
     # Globalink's project detail is a modal, so there is no per-project URL to
     # link to. Searching the exact title returns that project alone, so that is
     # the hand-off we give.
@@ -428,20 +325,20 @@ async def export(x_session_id: str | None = Header(None)) -> JSONResponse:
         "",
     ]
 
-    for i, m in enumerate(s.last_run.matches, start=1):
-        pr = m.project
+    for i, m in enumerate(matches, start=1):
+        pr = m.get("project") or {}
         lines += [
-            f"## {i}. [{m.score}] {pr.get('title')}", "",
+            f"## {i}. [{m.get('score')}] {pr.get('title')}", "",
             f"**ID** `{pr.get('id')}` · **{pr.get('supervisor')}** — {pr.get('university')} "
             f"({pr.get('province')}) · {pr.get('language')}"
             + (f" · starts {pr.get('startDate')}" if pr.get("startDate") else ""), "",
-            f"{m.rationale}", "",
+            f"{m.get('rationale') or ''}", "",
             f"*Search this title on Globalink:* `{pr.get('title')}`", "",
         ]
-        if m.evidence:
-            lines += ["**Evidence from your profile:**"] + [f"- {e}" for e in m.evidence] + [""]
-        if m.gaps:
-            lines += ["**Gaps to close:**"] + [f"- {g}" for g in m.gaps] + [""]
+        if m.get("evidence"):
+            lines += ["**Evidence from your profile:**"] + [f"- {e}" for e in m["evidence"]] + [""]
+        if m.get("gaps"):
+            lines += ["**Gaps to close:**"] + [f"- {g}" for g in m["gaps"]] + [""]
 
     return JSONResponse({"markdown": "\n".join(lines)})
 

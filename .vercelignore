@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+data/kb/
+# The uncompressed corpus is a 12 MB duplicate of projects.json.gz, which the
+# loader prefers if present. Shipping it would bloat the bundle for nothing.
+data/projects.json
+Dockerfile
+.dockerignore
+render.yaml
+server.log
+*.log

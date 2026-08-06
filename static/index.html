@@ -177,15 +177,15 @@
       <div class="two field">
         <div>
           <label class="lab">Results</label>
-          <input id="topN" type="number" min="1" max="200" value="50">
+          <input id="topN" type="number" min="1" max="120" value="15">
         </div>
         <div>
-          <label class="lab">Screen width</label>
+          <label class="lab">Projects read</label>
           <select id="width">
-            <option value="400" selected>Top 400</option>
-            <option value="800">Top 800</option>
-            <option value="1500">Top 1500</option>
-            <option value="0">Exhaustive</option>
+            <option value="30">Top 30 — fastest</option>
+            <option value="60" selected>Top 60</option>
+            <option value="120">Top 120</option>
+            <option value="240">Top 240 — widest</option>
           </select>
         </div>
       </div>
@@ -197,7 +197,6 @@
       <button class="btn" id="run" style="width:100%" disabled>
         <span class="ico">&rarr;</span><span class="lbl" style="flex:1">Find matches</span>
       </button>
-      <button class="btn-ghost hidden" id="cancel" style="width:100%;margin-top:10px">Cancel run</button>
       <button class="btn-ghost" id="exp" style="width:100%;margin-top:10px" disabled>Export markdown</button>
     </div>
   </aside>
@@ -225,20 +224,48 @@
 </div>
 
 <script>
-const SID = localStorage.getItem("sid") || (crypto.randomUUID?.() ?? String(Math.random()).slice(2));
-localStorage.setItem("sid", SID);
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
 
+/* The workspace lives here, not on the server. Parsed document text, the built
+   profile and the per-passage extract cache are held in this tab and travel
+   with each request, the same way the API key always has. That is what lets the
+   app run on a host with no disk — and it means a shared deployment never holds
+   anyone's CV. */
 let PROVIDER = localStorage.getItem("provider") || "openrouter";
-let DOCS = [], HAS_PROFILE = false, BUSY = false, HEALTH = null;
+let DOCS = [], PROFILE = null, EXTRACT_CACHE = {}, LAST_RUN = null;
+let BUSY = false, HEALTH = null;
+
+const WS_KEY = "workspace";
+function saveWorkspace() {
+  try {
+    localStorage.setItem(WS_KEY, JSON.stringify({ docs: DOCS, profile: PROFILE, cache: EXTRACT_CACHE }));
+  } catch (_) {
+    // Quota exceeded on a very large upload. The session still works; it just
+    // will not survive a reload, which is better than losing the run.
+    msg("Workspace too large to save locally — it will not persist if you reload.", "warn");
+  }
+}
+function loadWorkspace() {
+  try {
+    const w = JSON.parse(localStorage.getItem(WS_KEY) || "{}");
+    DOCS = w.docs || []; PROFILE = w.profile || null; EXTRACT_CACHE = w.cache || {};
+  } catch (_) { DOCS = []; PROFILE = null; EXTRACT_CACHE = {}; }
+}
 
 const keyStoreName = p => "key_" + p;
-const H = () => ({ "X-Session-Id": SID, "X-API-Key": $("key").value.trim() });
+const H = () => ({ "X-API-Key": $("key").value.trim() });
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: { ...H(), ...(opts.headers || {}) } });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    const err = new Error(body.detail || `HTTP ${r.status}`);
+    // A failed profile build still returns the passages that succeeded. Carry
+    // them on the error so the caller can bank them for the retry.
+    if (body.extractCache) err.extractCache = body.extractCache;
+    throw err;
+  }
   return r.json();
 }
 function msg(t, kind = "warn") { $("msg").innerHTML = t ? `<div class="note ${kind}">${esc(t)}</div>` : ""; }
@@ -247,11 +274,11 @@ function sync() {
   const hasKey = !!$("key").value.trim();
   const readable = DOCS.filter(d => !d.error).length;
   $("build").disabled = BUSY || !readable || !hasKey;
-  $("run").disabled = BUSY || !HAS_PROFILE || !hasKey;
+  $("run").disabled = BUSY || !PROFILE || !hasKey;
   $("clearKb").classList.toggle("hidden", DOCS.length === 0);
   $("statePill").textContent =
     BUSY ? "WORKING…" : !hasKey ? "AWAITING KEY" : !readable ? "AWAITING DOCUMENTS"
-    : !HAS_PROFILE ? "READY TO PROFILE" : "READY TO MATCH";
+    : !PROFILE ? "READY TO PROFILE" : "READY TO MATCH";
 }
 
 /* ---- provider ---------------------------------------------------------- */
@@ -279,24 +306,22 @@ $("model").addEventListener("change", () => localStorage.setItem("model_" + PROV
 
 // Mirrors the server's batch sizes. The binding constraint on a free tier is
 // requests per minute, not tokens, so the call count is the number that matters.
-const MAP_BATCH = 5, JUDGE_BATCH = 6;
+const JUDGE_BATCH = 6;
 // Models whose free tier is too tight for a wide fan-out.
 const SLOW_FREE = /gemini-(flash-latest|3\.6-flash|3-flash|pro|2\.5-pro)/i;
 
 function updatePlan() {
-  const topN = +$("topN").value || 0;
   const width = +$("width").value;
-  const screened = width > 0 ? Math.min(width, 3359) : 3359;
-  const map = Math.ceil(screened / MAP_BATCH);
-  const judge = Math.ceil(Math.min(screened, Math.max(Math.round(topN * 2.5), 24)) / JUDGE_BATCH);
-  const total = map + judge;
+  // One pass: a keyword filter picks `width` projects for free, and every one
+  // of them is read by the model. Nothing else spends calls.
+  const total = Math.ceil(width / JUDGE_BATCH);
   const slow = SLOW_FREE.test($("model").value || "");
-  const mins = slow ? Math.ceil(total / 20) : Math.ceil(total / 60);
+  const mins = Math.max(1, slow ? Math.ceil(total / 20) : Math.ceil(total / 60));
   $("plan").innerHTML =
-    `~${total} model calls (${map} screening + up to ${judge} judging).` +
-    (slow && total > 40
-      ? ` <span style="color:var(--acc)">This model's free tier is ~20/min — expect ${mins}+ min. Use a smaller width or a lite model.</span>`
-      : ` Roughly ${mins} min on a free tier.`);
+    `~${total} model calls — reading ${width} of ${(HEALTH?.projects ?? 3359).toLocaleString()} projects.` +
+    (slow && total > 30
+      ? ` <span style="color:var(--acc)">This model's free tier is ~20/min — expect ${mins}+ min. Read fewer, or pick a lite model.</span>`
+      : ` Under ${mins} min on a free tier.`);
 }
 ["topN", "width", "model"].forEach(id =>
   $(id).addEventListener("input", updatePlan));
@@ -320,8 +345,12 @@ function loadModels() {
 }
 
 /* ---- knowledge base ---------------------------------------------------- */
-function renderKb(kb) {
-  DOCS = kb.documents; HAS_PROFILE = kb.hasProfile;
+/* Adding or removing material invalidates the consolidated profile, but NOT the
+   per-passage extract cache — that is keyed by content, so passages that did not
+   change stay valid and must not be paid for twice. */
+function invalidateProfile() { PROFILE = null; $("pmeta").textContent = ""; }
+
+function renderKb() {
   $("docs").innerHTML = DOCS.map(d => `
     <div class="doc">
       <div class="t">
@@ -330,21 +359,29 @@ function renderKb(kb) {
       </div>
       <button data-id="${d.id}" title="Remove">&times;</button>
     </div>`).join("");
-  $("docs").querySelectorAll("button").forEach(b => b.onclick = async () => {
-    renderKb(await api(`/api/kb/${b.dataset.id}`, { method: "DELETE" }));
+  $("docs").querySelectorAll("button").forEach(b => b.onclick = () => {
+    DOCS = DOCS.filter(d => d.id !== b.dataset.id);
+    invalidateProfile(); saveWorkspace(); renderKb();
   });
+  const readable = DOCS.filter(d => !d.error).length;
+  const chars = DOCS.reduce((n, d) => n + (d.chars || 0), 0);
   $("kbMeta").textContent = DOCS.length
-    ? `${kb.readable}/${DOCS.length} readable · ${kb.totalChars.toLocaleString()} chars`
+    ? `${readable}/${DOCS.length} readable · ${chars.toLocaleString()} chars`
     : "";
-  if (kb.profileMeta?.units) {
+  if (!PROFILE && Object.keys(EXTRACT_CACHE).length) {
     $("pmeta").textContent =
-      `${kb.profileMeta.hits}/${kb.profileMeta.units} passages used · ` +
-      `${kb.profileMeta.reduceLayers} reduce layer(s)`;
-  } else if (kb.cachedPassages) {
-    $("pmeta").textContent =
-      `${kb.cachedPassages} passage(s) already read — Build profile resumes from there.`;
+      `${Object.keys(EXTRACT_CACHE).length} passage(s) already read — Build profile resumes from there.`;
   }
   sync();
+}
+
+function addDocs(docs) {
+  // Re-adding the same file replaces it rather than stacking a duplicate.
+  for (const d of docs) {
+    const i = DOCS.findIndex(x => x.id === d.id);
+    if (i >= 0) DOCS[i] = d; else DOCS.push(d);
+  }
+  invalidateProfile(); saveWorkspace(); renderKb();
 }
 
 async function upload(files) {
@@ -353,9 +390,9 @@ async function upload(files) {
   [...files].forEach(f => fd.append("files", f));
   msg("Parsing documents…");
   try {
-    const kb = await api("/api/kb", { method: "POST", body: fd });
-    renderKb(kb);
-    const bad = kb.documents.filter(d => d.error).length;
+    const r = await api("/api/kb", { method: "POST", body: fd });
+    addDocs(r.documents);
+    const bad = r.documents.filter(d => d.error).length;
     msg(bad ? `${bad} file(s) could not be read — see the list.` : "");
   } catch (e) { msg(e.message, "bad"); }
 }
@@ -368,15 +405,19 @@ $("drop").addEventListener("drop", e => { e.preventDefault(); $("drop").classLis
 $("pasteToggle").onclick = () => $("pasteBox").classList.toggle("hidden");
 $("pasteSave").onclick = async () => {
   try {
-    renderKb(await api("/api/kb/text", {
+    const r = await api("/api/kb/text", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title: $("pasteTitle").value, text: $("pasteText").value }),
-    }));
+    });
+    addDocs(r.documents);
     $("pasteTitle").value = ""; $("pasteText").value = "";
     $("pasteBox").classList.add("hidden"); msg("");
   } catch (e) { msg(e.message, "bad"); }
 };
-$("clearKb").onclick = async () => { renderKb(await api("/api/kb", { method: "DELETE" })); msg(""); };
+$("clearKb").onclick = () => {
+  DOCS = []; PROFILE = null; EXTRACT_CACHE = {}; LAST_RUN = null;
+  $("pmeta").textContent = ""; saveWorkspace(); renderKb(); msg("");
+};
 
 /* ---- stage 0 ----------------------------------------------------------- */
 $("build").onclick = async () => {
@@ -384,9 +425,14 @@ $("build").onclick = async () => {
   try {
     const r = await api("/api/profile", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider: PROVIDER, model: $("model").value.trim() || undefined }),
+      body: JSON.stringify({
+        provider: PROVIDER, model: $("model").value.trim() || undefined,
+        documents: DOCS, extractCache: EXTRACT_CACHE,
+      }),
     });
-    HAS_PROFILE = true;
+    PROFILE = r.profile;
+    EXTRACT_CACHE = r.extractCache || EXTRACT_CACHE;
+    saveWorkspace();
     const m = r.meta;
     $("pmeta").textContent =
       `${m.hits}/${m.units} passages used` +
@@ -395,67 +441,56 @@ $("build").onclick = async () => {
     msg(m.warning || "");
   } catch (e) {
     msg(e.message, "bad");
-    // A failed build still banks the passages that succeeded, so refresh the
-    // panel to show what carried over before the user retries.
-    try { renderKb(await api("/api/kb")); } catch (_) {}
+    // A failed build still banks the passages that succeeded; keep them so the
+    // retry resumes instead of re-spending quota.
+    if (e.extractCache) { EXTRACT_CACHE = e.extractCache; saveWorkspace(); }
+    renderKb();
   }
   BUSY = false; sync();
 };
 
-/* ---- stages 1-3 -------------------------------------------------------- */
-let JOB = null;
-
-$("cancel").onclick = async () => {
-  if (!JOB) return;
-  try { await api(`/api/match/${JOB}/cancel`, { method: "POST" }); } catch (_) {}
-};
+/* ---- the run ------------------------------------------------------------ */
+function logLine(text) {
+  const line = document.createElement("div");
+  line.textContent = "> " + text;
+  $("log").appendChild(line);
+}
 
 $("run").onclick = async () => {
   BUSY = true; sync(); msg("");
-  $("cancel").classList.remove("hidden");
   $("termWrap").classList.remove("hidden"); $("log").textContent = ""; $("out").innerHTML = "";
+
+  const width = +$("width").value;
+  const calls = Math.ceil(width / JUDGE_BATCH);
+  // One request now, so progress is stated up front rather than streamed back.
+  logLine(`Filtering ${(HEALTH?.projects ?? 3359).toLocaleString()} projects by term overlap…`);
+  logLine(`Reading the top ${width} in ${calls} model calls. This takes a minute or two.`);
+
   try {
-    const { jobId } = await api("/api/match", {
+    const r = await api("/api/match", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         provider: PROVIDER, model: $("model").value.trim() || undefined,
-        topN: +$("topN").value, width: +$("width").value,
+        topN: +$("topN").value, width,
         provinces: [...$("prov").selectedOptions].map(o => o.value),
+        profile: PROFILE,
       }),
     });
-    JOB = jobId;
-    await stream(jobId);
-  } catch (e) { msg(e.message, "bad"); }
-  JOB = null;
-  $("cancel").classList.add("hidden");
+    logLine(`Scored ${r.stats.judged} projects. Done.`);
+    LAST_RUN = r;
+    render(r);
+  } catch (e) { msg(e.message, "bad"); logLine("Failed: " + e.message); }
   BUSY = false; sync();
 };
-
-function stream(jobId) {
-  return new Promise(resolve => {
-    const es = new EventSource(`/api/match/${jobId}/events`);
-    es.onmessage = ev => {
-      const d = JSON.parse(ev.data);
-      if (d.type === "progress") {
-        const line = document.createElement("div");
-        line.textContent = "> " + d.message;
-        $("log").appendChild(line);
-
-      } else if (d.type === "done") { render(d.result); es.close(); resolve(); }
-      else if (d.type === "error") { msg(d.message, "bad"); es.close(); resolve(); }
-    };
-    es.onerror = () => { es.close(); resolve(); };
-  });
-}
 
 function render(r) {
   const s = r.stats;
   $("topbar").innerHTML =
     `<span class="pill acc">${r.matches.length} MATCHES</span>` +
-    [`${s.screened.toLocaleString()}/${s.poolSize.toLocaleString()} screened`,
-     `${s.candidates} candidates`, `${s.judged} judged`,
-     `${s.mapCalls + s.judgeCalls} calls`,
-     s.droppedIds ? `${s.droppedIds} ids dropped` : ""]
+    [`${s.screened.toLocaleString()}/${s.poolSize.toLocaleString()} read`,
+     `${s.judged} scored`,
+     `${s.judgeCalls} calls`,
+     s.droppedIds ? `${s.droppedIds} skipped` : ""]
       .filter(Boolean).map(t => `<span class="pill">${esc(t)}</span>`).join("");
 
   if (r.warning) msg(r.warning, "warn");
@@ -552,8 +587,14 @@ function wireCards() {
 }
 
 $("exp").onclick = async () => {
+  if (!LAST_RUN) return msg("Nothing to export — run a match first.", "bad");
   try {
-    const { markdown } = await api("/api/export", { method: "POST" });
+    const { markdown } = await api("/api/export", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...LAST_RUN, provider: PROVIDER, model: $("model").value.trim() || undefined,
+      }),
+    });
     const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown" }));
     Object.assign(document.createElement("a"), { href: url, download: "mitacs-matches.md" }).click();
     URL.revokeObjectURL(url);
@@ -567,7 +608,9 @@ $("exp").onclick = async () => {
   $("prov").innerHTML = HEALTH.provinces.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
   $("prov").size = Math.max(2, HEALTH.provinces.length);   // show every province, never scroll
   setProvider(PROVIDER);
-  renderKb(await api("/api/kb"));
+  loadWorkspace();
+  renderKb();
+  if (PROFILE) msg("Workspace restored from this browser — your profile is ready to match.", "warn");
   updatePlan();
 })();
 </script>

@@ -1,10 +1,15 @@
 """
 End-to-end tests through the FastAPI app.
 
-These run against the REAL project corpus (data/projects.json, 3,359 rows) and
-the real prefilter index. Only the LLM boundary is faked, so everything else —
-upload, parsing, chunking, prefilter, map/judge wiring, SSE, export — is
-exercised exactly as it runs in production.
+These run against the REAL project corpus (data/projects.json[.gz], 3,359 rows)
+and the real prefilter index. Only the LLM boundary is faked, so everything else
+— upload, parsing, chunking, prefilter, judge wiring, export — is exercised
+exactly as it runs in production.
+
+The app keeps nothing between requests, so these tests carry the workspace the
+way the browser does: parsed documents and the built profile go out in the
+request body. That is the contract, and `test_the_server_keeps_nothing` is the
+test that pins it.
 """
 
 from __future__ import annotations
@@ -20,38 +25,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import app as app_mod  # noqa: E402
-from engine import matching, profile as profile_mod, store as store_mod  # noqa: E402
+from engine import matching, profile as profile_mod  # noqa: E402
 
-SID = {"X-Session-Id": "test-session", "X-API-Key": "test-key"}
+KEY = {"X-API-Key": "test-key"}
 
 
 @pytest.fixture
 def client():
-    # Must be the context-manager form: it keeps ONE event loop alive across
-    # requests, so the background match task started by POST /api/match is still
-    # running when the SSE endpoint reads its queue. A bare TestClient() tears
-    # the loop down after each request and orphans the task. Under uvicorn there
-    # is a single long-lived loop, so this matches production behaviour.
     with TestClient(app_mod.app) as c:
         yield c
 
 
-@pytest.fixture(autouse=True)
-def clean_session(tmp_path, monkeypatch):
-    # Knowledge bases now persist to disk, so clearing SESSIONS alone leaves the
-    # previous test's documents on the store and the next test inherits them.
-    # Redirect the store at a tmp dir so each test starts empty AND so the suite
-    # never writes into the app's real data/kb/.
-    monkeypatch.setattr(store_mod, "STORE_DIR", tmp_path / "kb")
-    app_mod.SESSIONS.clear()
-    yield
-    app_mod.SESSIONS.clear()
-
-
 @pytest.fixture
 def fake_llm(monkeypatch):
-    """Profile extraction returns a fixed DevOps/LLM profile; matching scores
-    any project whose title mentions the themes we care about."""
+    """Profile extraction returns a fixed DevOps/LLM profile; the judge scores
+    every project it is shown, descending, so ranking is checkable."""
 
     async def profile_call(client, cfg, system, user, max_tokens=2048):
         if system.startswith("You are a profile extractor"):
@@ -75,25 +63,44 @@ def fake_llm(monkeypatch):
             "interests": ["LLM serving"], "achievements": [], "constraints": [],
         }
 
-    async def match_call(client, cfg, system, user, max_tokens=2048):
-        payload = json.loads(user.split("CANDIDATE PROJECTS:\n")[-1]) if "CANDIDATE PROJECTS:" in user else None
-        if payload is not None:  # MAP
-            return {"candidates": [
-                {"projectId": p["id"], "fit": 70, "reason": "themes overlap",
-                 "evidence": ["Kubernetes"], "concerns": []}
-                for p in payload
-            ]}
-        judged = json.loads(user.split("PROJECTS TO JUDGE:\n")[-1])  # JUDGE
+    async def judge_call(client, cfg, system, user, max_tokens=2048):
+        judged = json.loads(user.split("PROJECTS TO JUDGE:\n")[-1])
         return {"verdicts": [
-            {"projectId": j["project"]["id"], "score": 90 - i, "rationale": "strong overlap",
+            {"projectId": p["id"], "score": 90 - i, "rationale": "strong overlap",
              "evidence": ["vLLM benchmark"], "gaps": ["domain ramp-up"]}
-            for i, j in enumerate(judged)
+            for i, p in enumerate(judged)
         ]}
 
     monkeypatch.setattr(profile_mod, "json_call", profile_call)
-    monkeypatch.setattr(matching, "json_call", match_call)
+    monkeypatch.setattr(matching, "json_call", judge_call)
 
 
+# --------------------------------------------------------------------------- #
+# helpers — the browser's job, done by hand
+# --------------------------------------------------------------------------- #
+MD = b"# Skills\n\nKubernetes, Helm, vLLM, KV cache, FastAPI.\n"
+
+
+def upload_md(client, text=MD):
+    """Returns the parsed documents, exactly as the browser would store them."""
+    r = client.post("/api/kb", files={"files": ("kb.md", text, "text/markdown")})
+    assert r.status_code == 200
+    return r.json()["documents"]
+
+
+def build_profile(client, docs):
+    r = client.post("/api/profile", headers=KEY, json={"documents": docs})
+    assert r.status_code == 200, r.text
+    return r.json()["profile"]
+
+
+def workspace(client):
+    docs = upload_md(client)
+    return build_profile(client, docs)
+
+
+# --------------------------------------------------------------------------- #
+# corpus and pages
 # --------------------------------------------------------------------------- #
 def test_health_exposes_the_real_corpus(client):
     r = client.get("/api/health").json()
@@ -102,139 +109,6 @@ def test_health_exposes_the_real_corpus(client):
     assert "Ontario" in r["provinces"] and "Québec" in r["provinces"]
 
 
-def test_session_id_is_required(client):
-    assert client.get("/api/kb").status_code == 400
-
-
-def test_upload_parses_the_real_cv_pdf(client):
-    cv = ROOT.parent / "resume_haseeb.pdf"
-    if not cv.exists():
-        pytest.skip("resume_haseeb.pdf not present")
-    r = client.post("/api/kb", headers=SID, files={"files": ("resume_haseeb.pdf", cv.read_bytes(), "application/pdf")})
-    assert r.status_code == 200
-    doc = r.json()["documents"][0]
-    assert doc["error"] == "", f"real CV failed to parse: {doc['error']}"
-    assert doc["chars"] > 1000, "extracted suspiciously little text from the CV"
-
-
-def test_unreadable_upload_is_reported_not_fatal(client):
-    r = client.post("/api/kb", headers=SID, files={"files": ("broken.pdf", b"not a pdf at all", "application/pdf")})
-    assert r.status_code == 200
-    doc = next(d for d in r.json()["documents"] if d["title"] == "broken.pdf")
-    assert doc["error"] != ""
-
-
-def test_profile_requires_documents(client, fake_llm):
-    assert client.post("/api/profile", headers=SID, json={}).status_code == 400
-
-
-def test_profile_requires_api_key(client):
-    r = client.post("/api/profile", headers={"X-Session-Id": "s"}, json={})
-    assert r.status_code == 401
-
-
-def test_match_requires_a_profile(client):
-    r = client.post("/api/match", headers=SID, json={"topN": 5})
-    assert r.status_code == 400
-
-
-def _upload_md(client, text=b"# Skills\n\nKubernetes, Helm, vLLM, KV cache, FastAPI.\n"):
-    return client.post("/api/kb", headers=SID, files={"files": ("kb.md", text, "text/markdown")})
-
-
-def _drain(client, job_id):
-    events = []
-    with client.stream("GET", f"/api/match/{job_id}/events") as resp:
-        for line in resp.iter_lines():
-            if line and line.startswith("data: "):
-                events.append(json.loads(line[6:]))
-    return events
-
-
-def test_full_pipeline_end_to_end(client, fake_llm):
-    _upload_md(client)
-
-    prof = client.post("/api/profile", headers=SID, json={})
-    assert prof.status_code == 200
-    assert prof.json()["profile"]["skills"], "profile should not be empty"
-
-    start = client.post("/api/match", headers=SID, json={"topN": 5, "width": 40})
-    assert start.status_code == 200
-    events = _drain(client, start.json()["jobId"])
-
-    assert any(e["type"] == "progress" for e in events), "should stream progress"
-    done = [e for e in events if e["type"] == "done"]
-    assert len(done) == 1, f"expected one done event, got {[e['type'] for e in events]}"
-
-    result = done[0]["result"]
-    assert len(result["matches"]) == 5
-    assert result["stats"]["screened"] == 40, "prefilter width should be honoured"
-
-    scores = [m["score"] for m in result["matches"]]
-    assert scores == sorted(scores, reverse=True), "results must be ranked by score"
-    for m in result["matches"]:
-        assert m["project"]["id"] and m["project"]["title"]
-        assert m["rationale"]
-
-
-def test_province_filter_restricts_results(client, fake_llm):
-    _upload_md(client)
-    client.post("/api/profile", headers=SID, json={})
-
-    start = client.post("/api/match", headers=SID, json={"topN": 5, "width": 30, "provinces": ["Ontario"]})
-    events = _drain(client, start.json()["jobId"])
-    result = [e for e in events if e["type"] == "done"][0]["result"]
-
-    assert result["matches"], "Ontario should yield matches"
-    assert all(m["project"]["province"] == "Ontario" for m in result["matches"])
-
-
-def test_top_n_is_capped_and_export_renders(client, fake_llm):
-    _upload_md(client)
-    client.post("/api/profile", headers=SID, json={})
-
-    start = client.post("/api/match", headers=SID, json={"topN": 3, "width": 25})
-    _drain(client, start.json()["jobId"])
-
-    md = client.post("/api/export", headers=SID).json()["markdown"]
-    assert md.startswith("# Mitacs project matches")
-    assert md.count("\n## ") == 3, "one heading per match"
-    assert "Evidence from your profile" in md
-
-
-def test_export_before_a_run_is_rejected(client):
-    assert client.post("/api/export", headers=SID).status_code == 400
-
-
-def test_deleting_a_document_invalidates_the_profile(client, fake_llm):
-    up = _upload_md(client)
-    doc_id = up.json()["documents"][0]["id"]
-    client.post("/api/profile", headers=SID, json={})
-    assert client.get("/api/kb", headers=SID).json()["hasProfile"] is True
-
-    client.delete(f"/api/kb/{doc_id}", headers=SID)
-    assert client.get("/api/kb", headers=SID).json()["hasProfile"] is False
-
-
-def test_exhaustive_width_screens_everything(client, fake_llm, monkeypatch):
-    """width=0 must bypass the prefilter. Restricted to one small province so
-    the test stays fast while still proving the branch."""
-    _upload_md(client)
-    client.post("/api/profile", headers=SID, json={})
-
-    pei = [p for p in app_mod.PROJECTS if p.get("province") == "Prince Edward Island"]
-    start = client.post("/api/match", headers=SID,
-                        json={"topN": 3, "width": 0, "provinces": ["Prince Edward Island"]})
-    events = _drain(client, start.json()["jobId"])
-    result = [e for e in events if e["type"] == "done"][0]["result"]
-
-    assert result["stats"]["screened"] == len(pei), "exhaustive mode must read every project in the pool"
-    assert any("Exhaustive" in e.get("message", "") for e in events if e["type"] == "progress")
-
-
-# --------------------------------------------------------------------------- #
-# providers, persistence, new file types
-# --------------------------------------------------------------------------- #
 def test_health_lists_both_providers(client):
     r = client.get("/api/health").json()
     assert r["providers"] == ["openrouter", "gemini"]
@@ -249,54 +123,9 @@ def test_gemini_catalogue_falls_back_without_a_key(client):
 
 def test_unknown_provider_is_rejected(client):
     assert client.get("/api/models?provider=bogus").status_code == 400
-    _upload_md(client)
-    r = client.post("/api/profile", headers=SID, json={"provider": "bogus"})
+    docs = upload_md(client)
+    r = client.post("/api/profile", headers=KEY, json={"provider": "bogus", "documents": docs})
     assert r.status_code == 400
-
-
-def test_knowledge_base_survives_session_eviction(client, fake_llm):
-    """Persistence contract: dropping the in-memory session must not lose
-    documents or the cached profile — they reload from disk."""
-    _upload_md(client)
-    client.post("/api/profile", headers=SID, json={})
-
-    app_mod.SESSIONS.clear()          # simulate a restart
-
-    kb = client.get("/api/kb", headers=SID).json()
-    assert len(kb["documents"]) == 1, "documents should reload from the store"
-    assert kb["hasProfile"] is True, "the cached profile should reload too"
-
-
-def test_clearing_the_knowledge_base_wipes_the_store(client):
-    _upload_md(client)
-    client.delete("/api/kb", headers=SID)
-    app_mod.SESSIONS.clear()
-    assert client.get("/api/kb", headers=SID).json()["documents"] == []
-
-
-def test_pasted_text_becomes_a_document(client):
-    r = client.post("/api/kb/text", headers=SID,
-                    json={"title": "Notes", "text": "vLLM benchmarking on an RTX 3060."})
-    assert r.status_code == 200
-    doc = next(d for d in r.json()["documents"] if d["title"] == "Notes")
-    assert doc["kind"] == "pasted" and doc["chars"] > 10
-
-
-def test_empty_paste_is_rejected(client):
-    assert client.post("/api/kb/text", headers=SID, json={"title": "x", "text": "  "}).status_code == 400
-
-
-def test_csv_upload_is_parsed_into_labelled_rows(client):
-    csv = b"skill,level\nKubernetes,demonstrated\nvLLM,demonstrated\n"
-    r = client.post("/api/kb", headers=SID, files={"files": ("skills.csv", csv, "text/csv")})
-    doc = next(d for d in r.json()["documents"] if d["title"] == "skills.csv")
-    assert doc["error"] == "" and doc["kind"] == "csv" and doc["chars"] > 20
-
-
-def test_binary_upload_is_refused_clearly(client):
-    r = client.post("/api/kb", headers=SID, files={"files": ("img.bin", bytes(range(256)), "application/octet-stream")})
-    doc = next(d for d in r.json()["documents"] if d["title"] == "img.bin")
-    assert "unsupported" in doc["error"] or "decode" in doc["error"]
 
 
 def test_landing_and_app_pages_render(client):
@@ -315,62 +144,132 @@ def test_landing_and_app_pages_render(client):
 
 
 # --------------------------------------------------------------------------- #
-# long-run controls
+# ingestion
 # --------------------------------------------------------------------------- #
-def test_run_reports_a_plan_and_per_batch_progress(client, fake_llm):
-    """A wide run on a rate-limited tier takes minutes. Stage-level messages
-    alone are indistinguishable from a hang, so the run must announce its size
-    and then report progress as batches land."""
-    _upload_md(client)
-    client.post("/api/profile", headers=SID, json={})
-
-    start = client.post("/api/match", headers=SID, json={"topN": 5, "width": 40})
-    events = _drain(client, start.json()["jobId"])
-    msgs = [e["message"] for e in events if e["type"] == "progress"]
-
-    assert any(m.startswith("Plan:") and "model calls" in m for m in msgs), msgs
-    assert any("screened" in m and "batches" in m for m in msgs), msgs
-    assert any("judged" in m and "batches" in m for m in msgs), msgs
+def test_upload_parses_the_real_cv_pdf(client):
+    cv = ROOT.parent / "resume_haseeb.pdf"
+    if not cv.exists():
+        pytest.skip("resume_haseeb.pdf not present")
+    r = client.post("/api/kb", files={"files": ("resume_haseeb.pdf", cv.read_bytes(), "application/pdf")})
+    assert r.status_code == 200
+    doc = r.json()["documents"][0]
+    assert doc["error"] == "", f"real CV failed to parse: {doc['error']}"
+    assert doc["chars"] > 1000, "extracted suspiciously little text from the CV"
 
 
-def test_cancelling_an_unknown_job_is_a_404(client):
-    assert client.post("/api/match/nope/cancel").status_code == 404
+def test_upload_returns_the_text_not_just_a_handle(client):
+    """The client is the only thing that remembers a document, so the parsed
+    text has to come back with it. Returning metadata alone would strand it."""
+    doc = upload_md(client)[0]
+    assert doc["text"].strip(), "parsed text must be returned to the caller"
+    assert "Kubernetes" in doc["text"]
+    assert doc["chars"] == len(doc["text"])
 
 
-def test_a_run_can_be_cancelled(client, fake_llm, monkeypatch):
-    """Without this, a mistaken 3,000-project run has to be waited out."""
-    import asyncio as _asyncio
-    from engine import matching as _m
+def test_unreadable_upload_is_reported_not_fatal(client):
+    r = client.post("/api/kb", files={"files": ("broken.pdf", b"not a pdf at all", "application/pdf")})
+    assert r.status_code == 200
+    doc = next(d for d in r.json()["documents"] if d["title"] == "broken.pdf")
+    assert doc["error"] != ""
 
-    async def slow(client_, cfg, system, user, max_tokens=2048):
-        await _asyncio.sleep(30)
-        return {"candidates": []}
 
-    monkeypatch.setattr(_m, "json_call", slow)
-    _upload_md(client)
-    client.post("/api/profile", headers=SID, json={})
+def test_pasted_text_becomes_a_document(client):
+    r = client.post("/api/kb/text", json={"title": "Notes", "text": "vLLM benchmarking on an RTX 3060."})
+    assert r.status_code == 200
+    doc = next(d for d in r.json()["documents"] if d["title"] == "Notes")
+    assert doc["kind"] == "pasted" and doc["chars"] > 10
 
-    start = client.post("/api/match", headers=SID, json={"topN": 5, "width": 40})
-    job = start.json()["jobId"]
-    assert client.post(f"/api/match/{job}/cancel").json()["cancelled"] is True
 
-    events = _drain(client, job)
-    assert any(e["type"] == "error" and "cancelled" in e["message"].lower() for e in events), events
+def test_empty_paste_is_rejected(client):
+    assert client.post("/api/kb/text", json={"title": "x", "text": "  "}).status_code == 400
+
+
+def test_csv_upload_is_parsed_into_labelled_rows(client):
+    csv = b"skill,level\nKubernetes,demonstrated\nvLLM,demonstrated\n"
+    r = client.post("/api/kb", files={"files": ("skills.csv", csv, "text/csv")})
+    doc = next(d for d in r.json()["documents"] if d["title"] == "skills.csv")
+    assert doc["error"] == "" and doc["kind"] == "csv" and doc["chars"] > 20
+
+
+def test_binary_upload_is_refused_clearly(client):
+    r = client.post("/api/kb", files={"files": ("img.bin", bytes(range(256)), "application/octet-stream")})
+    doc = next(d for d in r.json()["documents"] if d["title"] == "img.bin")
+    assert "unsupported" in doc["error"] or "decode" in doc["error"]
 
 
 # --------------------------------------------------------------------------- #
-# opening a project on Globalink
+# guard rails
 # --------------------------------------------------------------------------- #
+def test_profile_requires_documents(client, fake_llm):
+    assert client.post("/api/profile", headers=KEY, json={}).status_code == 400
+
+
+def test_profile_requires_api_key(client):
+    assert client.post("/api/profile", json={}).status_code == 401
+
+
+def test_match_requires_a_profile(client):
+    r = client.post("/api/match", headers=KEY, json={"topN": 5})
+    assert r.status_code == 400
+
+
+def test_export_without_matches_is_rejected(client):
+    assert client.post("/api/export", json={}).status_code == 400
+
+
+# --------------------------------------------------------------------------- #
+# the pipeline
+# --------------------------------------------------------------------------- #
+def test_full_pipeline_end_to_end(client, fake_llm):
+    profile = workspace(client)
+    assert profile["skills"], "profile should not be empty"
+
+    r = client.post("/api/match", headers=KEY,
+                    json={"topN": 5, "width": 40, "profile": profile})
+    assert r.status_code == 200, r.text
+    result = r.json()
+
+    assert len(result["matches"]) == 5
+    assert result["stats"]["screened"] == 40, "filter width should be honoured"
+
+    scores = [m["score"] for m in result["matches"]]
+    assert scores == sorted(scores, reverse=True), "results must be ranked by score"
+    for m in result["matches"]:
+        assert m["project"]["id"] and m["project"]["title"]
+        assert m["rationale"]
+
+
+def test_the_call_count_follows_the_width(client, fake_llm):
+    """The whole cost model: one filter pass for free, then every survivor read
+    in batches. Nothing else spends the user's quota."""
+    profile = workspace(client)
+    width = 30
+    r = client.post("/api/match", headers=KEY,
+                    json={"topN": 5, "width": width, "profile": profile}).json()
+
+    expected = -(-width // matching.JUDGE_BATCH_SIZE)
+    assert r["stats"]["judgeCalls"] == expected
+    assert r["stats"]["screened"] == width
+
+
+def test_province_filter_restricts_results(client, fake_llm):
+    profile = workspace(client)
+    r = client.post("/api/match", headers=KEY,
+                    json={"topN": 5, "width": 30, "provinces": ["Ontario"], "profile": profile}).json()
+
+    assert r["matches"], "Ontario should yield matches"
+    assert all(m["project"]["province"] == "Ontario" for m in r["matches"])
+
+
 def test_results_carry_every_field_needed_to_read_a_project(client, fake_llm):
     """Globalink's detail view is a modal with no URL of its own, so the app has
     to be able to show the whole project itself rather than linking out."""
-    _upload_md(client)
-    client.post("/api/profile", headers=SID, json={})
-    start = client.post("/api/match", headers=SID, json={"topN": 3, "width": 25})
-    result = [e for e in _drain(client, start.json()["jobId"]) if e["type"] == "done"][0]["result"]
+    profile = workspace(client)
+    r = client.post("/api/match", headers=KEY,
+                    json={"topN": 3, "width": 25, "profile": profile}).json()
 
-    assert result["matches"]
-    for m in result["matches"]:
+    assert r["matches"]
+    for m in r["matches"]:
         p = m["project"]
         for field in ("id", "title", "description", "supervisor",
                       "university", "province", "language", "startDate"):
@@ -378,13 +277,62 @@ def test_results_carry_every_field_needed_to_read_a_project(client, fake_llm):
         assert p["title"].strip(), "an empty title would break the Globalink title search"
 
 
-def test_export_explains_how_to_open_a_project(client, fake_llm):
-    _upload_md(client)
-    client.post("/api/profile", headers=SID, json={})
-    start = client.post("/api/match", headers=SID, json={"topN": 2, "width": 25})
-    _drain(client, start.json()["jobId"])
+# --------------------------------------------------------------------------- #
+# statelessness — the property the deployment depends on
+# --------------------------------------------------------------------------- #
+def test_the_server_keeps_nothing(client, fake_llm):
+    """Every request must stand alone. If any of this leaked into process state,
+    the app would break the moment it ran on more than one instance — and a
+    shared deployment would be holding strangers' CVs."""
+    profile = workspace(client)
 
-    md = client.post("/api/export", headers=SID).json()["markdown"]
+    # A match works with no prior request having "set up" a session.
+    fresh = TestClient(app_mod.app)
+    r = fresh.post("/api/match", headers=KEY,
+                   json={"topN": 3, "width": 25, "profile": profile})
+    assert r.status_code == 200, "a match must not depend on earlier requests"
+    assert len(r.json()["matches"]) == 3
+
+    # And the same request without the profile fails, proving the profile came
+    # from the body rather than from anything the server remembered.
+    assert client.post("/api/match", headers=KEY,
+                       json={"topN": 3, "width": 25}).status_code == 400
+
+    assert not hasattr(app_mod, "SESSIONS"), "no session registry should exist"
+    assert not hasattr(app_mod, "JOBS"), "no job registry should exist"
+
+
+def test_uploads_are_not_retained_server_side(client):
+    """The upload endpoint is a parser, not a store."""
+    upload_md(client)
+    kb_dir = ROOT / "data" / "kb"
+    written = list(kb_dir.glob("*.json")) if kb_dir.exists() else []
+    before = {p: p.stat().st_mtime for p in written}
+    upload_md(client, b"# Other\n\nSomething else entirely.\n")
+    after = {p: p.stat().st_mtime for p in written}
+    assert before == after, "uploading must not write to the old on-disk store"
+
+
+# --------------------------------------------------------------------------- #
+# export
+# --------------------------------------------------------------------------- #
+def test_export_renders_the_run_it_is_given(client, fake_llm):
+    profile = workspace(client)
+    run = client.post("/api/match", headers=KEY,
+                      json={"topN": 3, "width": 25, "profile": profile}).json()
+
+    md = client.post("/api/export", json={**run, "provider": "openrouter", "model": "m"}).json()["markdown"]
+    assert md.startswith("# Mitacs project matches")
+    assert md.count("\n## ") == 3, "one heading per match"
+    assert "Evidence from your profile" in md
+
+
+def test_export_explains_how_to_open_a_project(client, fake_llm):
+    profile = workspace(client)
+    run = client.post("/api/match", headers=KEY,
+                      json={"topN": 2, "width": 25, "profile": profile}).json()
+
+    md = client.post("/api/export", json=run).json()["markdown"]
     assert "globalink.mitacs.ca/#/student/application/projects" in md
     assert "Keyword search" in md
     assert md.count("Search this title on Globalink:") == 2

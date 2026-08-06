@@ -1,13 +1,3 @@
----
-title: Mitacs Matcher
-emoji: 🎓
-colorFrom: gray
-colorTo: blue
-sdk: docker
-app_port: 7860
-pinned: false
----
-
 # Mitacs Matcher
 
 Upload your own documents, get the Mitacs Globalink projects you actually fit —
@@ -42,60 +32,63 @@ never estimated from a vector.
 
 ```
   documents ──► STAGE 0  chunk → parallel map → tree reduce ──► capability profile
-                         (Galt RAG's map-reduce, query held fixed)
+                         (Galt RAG's map-reduce, query held fixed)   ~1-2 calls
 
   profile   ──► STAGE 1  lexical recall filter (BM25, no embeddings)
-                         3,359 projects → N candidates
+                         3,359 projects → 60                         0 calls
 
-            ──► STAGE 2  MAP    batches of projects, bounded fan-out
-                                → batch-local candidates + evidence
-
-            ──► STAGE 3  JUDGE  survivors re-scored head-to-head
-                                → calibrated, comparable 0–100  ──► ranked results
+            ──► STAGE 2  JUDGE  each survivor read in full and scored
+                                on a calibrated 0–100 scale          ~10 calls
+                                                          ──► ranked results
 ```
 
 **Stage 0 — profile (`engine/profile.py`)** is Galt RAG's map-reduce with the
 query fixed: every passage of your knowledge base is read by the model and asked
 *what does this prove this person can do?*, then the partial profiles are folded
-by a real consolidation pass. Not concatenation — bideez is explicit that
-concatenating produces duplicates and inconsistent classification. Built once
-per knowledge base and cached.
+by a real consolidation pass. Not concatenation — concatenating produces
+duplicates and inconsistent classification. Built once per knowledge base and
+cached, so a CV costs one or two calls and then nothing.
 
-**Stage 2/3 — match (`engine/matching.py`)** is bideez's
-`src/mastra/matching/run.ts`, with requirements/corpus swapped for
-profile/projects:
+**Stage 1 — filter (`engine/prefilter.py`)** narrows the field before anything
+is spent. IDF-weighted term matching with title boosting, no embeddings, so any
+admission or omission can be explained by pointing at the terms that fired.
 
-| bideez | here |
-|---|---|
-| MAP over (requirement batch × corpus chunk) | MAP over batches of projects against the profile |
-| GATHER — validate each cited `evidenceUnitId` resolves | GATHER — validate each cited `projectId` resolves; drop and count the rest |
-| JUDGE — re-judge gathered evidence head-to-head | JUDGE — re-score survivors on a calibrated scale |
-| "chunk-local relevance scores are NOT comparable" | map `fit` chooses *who* gets judged, never the ranking |
-| requirements with no evidence skip the judge | projects with no candidate skip the judge |
+**Stage 2 — judge (`engine/matching.py`)** reads each survivor in full and scores
+it against the profile on a scale calibrated to mean the same thing for every
+project. Every score you see comes from here; the filter never ranks.
 
-Also carried over: **structure-aligned chunking** (`engine/corpus.py`) — sections
-packed to a ceiling and never split, only an oversize section is hard-split with
-overlap, every unit keeping a provenance anchor; **bounded fan-out** with a
-semaphore; **jittered retries** honouring `Retry-After`; and **honest
-degradation** — a failed unit is counted and surfaced as a partial-result
-warning, never silently dropped.
+Carried over from the source projects: **structure-aligned chunking**
+(`engine/corpus.py`) — sections packed to a ceiling and never split, only an
+oversize section is hard-split with overlap, every unit keeping a provenance
+anchor; **bounded fan-out** with a semaphore; **jittered retries** honouring
+`Retry-After`; and **honest degradation** — a failed unit is counted and
+surfaced as a partial-result warning, never silently dropped.
 
-### The one deviation, stated plainly
+### Why there is no screening pass
 
-Galt RAG reads *every* token for *every* query. That is affordable for one
-person's documents; for 3,359 projects it is ~670 LLM calls per run. So
-**Stage 1 (`engine/prefilter.py`)** narrows the field first. Two rules keep it
-honest:
+An earlier design put a model "map" stage between the filter and the judge:
+batches of five projects, each asked only whether the person was a plausible
+fit, feeding a judge pass over the survivors. Measured against the real corpus,
+that stage was mostly waste.
 
-1. **It never ranks.** It is a recall filter tuned to over-admit. Every survivor
-   is still read and scored by the model, and every score you see comes from
-   Stage 3.
-2. **It is not vector similarity.** IDF-weighted term matching — transparent, so
-   any admission or omission can be explained by pointing at the terms that fired.
+BM25 scores decay gradually rather than falling off a cliff. Against a real
+profile, the projects at rank 400 still scored **31%** of the top hit, and rank
+200 was *"Memorize book reading Android App based on GAIOLA"* at 41% — visibly
+off-topic. So a width of 400 admitted several hundred junk projects, and the map
+pass then spent ~75 of the run's ~101 calls rejecting things the filter had
+already ranked near the bottom.
 
-Set the width selector to **Exhaustive** (`width=0`) to skip it and put every
-project through the model. That is the faithful-to-Galt-RAG setting, available
-whenever you want to pay for it.
+Narrowing the filter instead (3,359 → 60) and judging that set directly costs
+**~10 calls instead of ~101**. Quality does not drop: the judge reads the full
+project text where the map pass only skimmed a trimmed description to make a
+keep/drop call. The plausible set is now read more carefully, not less.
+
+**The cost, stated plainly.** BM25 cannot match meaning across different
+vocabulary, and the judge only ever sees what the filter admits. A project
+describing the same work in words your profile never uses is missed before any
+model reads it — the map pass, being semantic, could have caught that. The
+`Projects read` selector is the dial that trades calls for that recall; raise it
+to 240 if you would rather pay for the cushion.
 
 ---
 
@@ -113,14 +106,14 @@ Then open <http://127.0.0.1:8093> — landing page, with the console at `/app`.
 ### Tests
 
 ```bash
-.venv/Scripts/python.exe -m pytest tests/ -q     # 71 passed
+.venv/Scripts/python.exe -m pytest tests/ -q     # 87 passed
 ```
 
 Every LLM call is faked, so the suite is offline and free. It runs against the
 real 3,359-project corpus and parses the real CV PDF. What is under test is the
-pipeline's contract: chunking loses no text, unresolvable ids are dropped and
-counted, failures degrade honestly, and the judge's score — not the batch-local
-map score — decides the ranking.
+pipeline's contract: chunking loses no text, ids the model invents never become
+matches, failures degrade honestly, and the server keeps nothing between
+requests.
 
 ---
 
@@ -128,17 +121,17 @@ map score — decides the ranking.
 
 ```
 engine/llm.py         OpenRouter + Gemini transport — retries, honest errors, model catalogues
-engine/store.py       per-session knowledge-base persistence (parsed text + cached profile)
 engine/corpus.py      structure-aligned chunking → citable evidence units
 engine/ingest.py      PDF / DOCX / MD / TXT → Document (swap in LlamaParse here)
 engine/profile.py     STAGE 0 — knowledge base → capability profile (map-reduce)
 engine/prefilter.py   STAGE 1 — BM25 recall filter (the only non-LLM step)
-engine/matching.py    STAGES 2-3 — map → gather → judge
-app.py                FastAPI: KB upload, profile, match (SSE progress), export
+engine/matching.py    STAGE 2 — the comparative judge
+app.py                FastAPI: parse, profile, match, export — stateless throughout
+api/index.py          Vercel entrypoint (imports the same app)
 static/landing.html   brutalist landing page
-static/index.html     the matcher console
+static/index.html     the matcher console — owns the workspace in localStorage
 static/brutal.css     design system (tokens taken from the v0 brutalist template)
-data/projects.json    3,359 Mitacs projects
+data/projects.json.gz 3,359 Mitacs projects
 ```
 
 ## Tuning
@@ -146,22 +139,31 @@ data/projects.json    3,359 Mitacs projects
 | knob | where | default |
 |---|---|---|
 | provider | sidebar | OpenRouter · Gemini |
-| model | sidebar | `meta-llama/llama-3.3-70b-instruct` · `gemini-2.0-flash` |
-| results wanted | sidebar | 50 (max 200) |
-| screening width | sidebar | top 400 · `0` = exhaustive |
-| concurrency | `MAX_CONCURRENCY` env | 8 |
-| projects per map call | `matching.MAP_BATCH_SIZE` | 5 |
-| judge pool floor | `matching.MIN_JUDGE_POOL` | 24 |
+| model | sidebar | `meta-llama/llama-3.3-70b-instruct` · `gemini-flash-lite-latest` |
+| results wanted | sidebar | 15 (max 120) |
+| projects read | sidebar | top 60 (30 · 60 · 120 · 240) |
+| default width | `DEFAULT_WIDTH` env | 60 |
+| concurrency | `MAX_CONCURRENCY` env | 8 (4 in deployment) |
+| projects per judge call | `matching.JUDGE_BATCH_SIZE` | 6 |
 | chunk ceiling | `corpus.CHUNK_CEILING_CHARS` | 12,000 |
 
-`MIN_JUDGE_POOL` exists because without it a small `top_n` makes the judge pool
-so narrow that ties in the deliberately non-comparable map score decide the
-ranking — the exact failure the judge stage is there to prevent.
+`Projects read` is the only number that costs anything: at `JUDGE_BATCH_SIZE` 6
+it sets the call count, the wall-clock time, and how much of your free quota a
+run spends.
+
+## Where state lives
+
+Nowhere on the server. The browser owns the workspace — parsed document text,
+the built profile, and the per-passage extract cache all live in its
+`localStorage` and travel with each request, the same way the API key always
+has. Two things follow: the app runs on a host with no persistent disk, and a
+shared deployment cannot leak one person's CV to another because it never holds
+one. The trade is that clearing site data clears the workspace.
 
 ## Providers
 
 Pick either in the sidebar. The key is sent per request, used, and discarded —
-never stored, cached, or logged, and never written to the knowledge-base store.
+never stored, cached, or logged.
 
 | | OpenRouter | Gemini |
 |---|---|---|

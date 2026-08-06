@@ -172,42 +172,38 @@ MATCH_PROJECTS = [
 ]
 
 
-def fake_json_call(map_reply, judge_reply, fail_map_on=(), fail_judge=False):
-    """Build a `json_call` stand-in that answers map and judge calls differently."""
-    calls = {"map": 0, "judge": 0}
+def fake_json_call(judge_reply, fail_judge_on=()):
+    """Build a `json_call` stand-in. The pipeline is one pass now, so there is
+    only one kind of call to answer."""
+    calls = {"judge": 0}
 
     async def _call(client, cfg, system, user, max_tokens=2048):
-        if system.startswith("You match a person"):
-            i = calls["map"]; calls["map"] += 1
-            if i in fail_map_on:
-                raise CallError("simulated upstream rate-limit")
-            return map_reply(user, i)
-        calls["judge"] += 1
-        if fail_judge:
-            raise CallError("simulated judge failure")
+        i = calls["judge"]; calls["judge"] += 1
+        if i in fail_judge_on:
+            raise CallError("simulated upstream rate-limit")
         return judge_reply(user)
 
     return _call, calls
+
+
+def ids_in(user):
+    """Which projects the model was actually shown in this call."""
+    return [p["id"] for p in MATCH_PROJECTS if f'"{p["id"]}"' in user]
 
 
 def run(coro):
     return asyncio.run(coro)
 
 
-def test_judge_score_overrides_batch_local_map_score(monkeypatch):
-    """The map `fit` must not leak into the ranking — only the judge's calibrated
-    score is shown. Map says p3 is best; the judge says p1 is."""
-    def map_reply(user, i):
-        ids = [p["id"] for p in MATCH_PROJECTS if f'"{p["id"]}"' in user]
-        return {"candidates": [{"projectId": pid, "fit": 99 if pid == "p3" else 10,
-                                "reason": "r", "evidence": ["e"], "concerns": []} for pid in ids]}
-
+def test_the_judge_score_is_what_ranks(monkeypatch):
+    """The only score the user ever sees comes from the judge, and it is what
+    orders the results."""
     def judge_reply(user):
-        ids = [p["id"] for p in MATCH_PROJECTS if f'"{p["id"]}"' in user]
         return {"verdicts": [{"projectId": pid, "score": 95 if pid == "p1" else 20,
-                              "rationale": "judged", "evidence": ["ev"], "gaps": []} for pid in ids]}
+                              "rationale": "judged", "evidence": ["ev"], "gaps": []}
+                             for pid in ids_in(user)]}
 
-    call, _ = fake_json_call(map_reply, judge_reply)
+    call, _ = fake_json_call(judge_reply)
     monkeypatch.setattr(matching, "json_call", call)
 
     res = run(matching.run_matching("profile", MATCH_PROJECTS, CFG, top_n=3))
@@ -216,66 +212,76 @@ def test_judge_score_overrides_batch_local_map_score(monkeypatch):
     assert res.matches[0].rationale == "judged"
 
 
-def test_unresolvable_project_ids_are_dropped_and_counted(monkeypatch):
-    def map_reply(user, i):
-        return {"candidates": [{"projectId": "GHOST", "fit": 90, "reason": "r", "evidence": [], "concerns": []}]}
-
+def test_every_project_sent_is_read_in_one_pass(monkeypatch):
+    """No screening stage means the call count follows directly from the number
+    of projects handed in — that is the whole cost model."""
     def judge_reply(user):
-        return {"verdicts": []}
+        return {"verdicts": [{"projectId": pid, "score": 50, "rationale": "j",
+                              "evidence": [], "gaps": []} for pid in ids_in(user)]}
 
-    call, _ = fake_json_call(map_reply, judge_reply)
+    call, calls = fake_json_call(judge_reply)
     monkeypatch.setattr(matching, "json_call", call)
 
     res = run(matching.run_matching("profile", MATCH_PROJECTS, CFG, top_n=3))
-    assert res.dropped_ids > 0
+    expected = -(-len(MATCH_PROJECTS) // matching.JUDGE_BATCH_SIZE)
+    assert calls["judge"] == expected
+    assert res.judge_calls == expected
+    assert res.n_judged == len(MATCH_PROJECTS)
+
+
+def test_ids_the_model_invents_never_become_matches(monkeypatch):
+    """A verdict citing a project we never sent must not resolve to anything."""
+    def judge_reply(user):
+        return {"verdicts": [{"projectId": "GHOST", "score": 90, "rationale": "r",
+                              "evidence": [], "gaps": []}]}
+
+    call, _ = fake_json_call(judge_reply)
+    monkeypatch.setattr(matching, "json_call", call)
+
+    res = run(matching.run_matching("profile", MATCH_PROJECTS, CFG, top_n=3))
     assert res.matches == []
-    assert res.n_candidates == 0
+    assert res.dropped_ids == len(MATCH_PROJECTS)
 
 
-def test_failed_map_calls_produce_a_partial_warning(monkeypatch):
-    def map_reply(user, i):
-        ids = [p["id"] for p in MATCH_PROJECTS if f'"{p["id"]}"' in user]
-        return {"candidates": [{"projectId": pid, "fit": 50, "reason": "r", "evidence": [], "concerns": []} for pid in ids]}
-
+def test_failed_calls_produce_a_partial_warning(monkeypatch):
+    """A rate limit must be reported, not silently shrink the corpus."""
     def judge_reply(user):
-        ids = [p["id"] for p in MATCH_PROJECTS if f'"{p["id"]}"' in user]
-        return {"verdicts": [{"projectId": pid, "score": 70, "rationale": "j", "evidence": [], "gaps": []} for pid in ids]}
+        return {"verdicts": [{"projectId": pid, "score": 70, "rationale": "j",
+                              "evidence": [], "gaps": []} for pid in ids_in(user)]}
 
-    call, _ = fake_json_call(map_reply, judge_reply, fail_map_on=(0,))
+    # One project per call, so failing call 0 loses exactly one project.
+    monkeypatch.setattr(matching, "JUDGE_BATCH_SIZE", 1)
+    call, _ = fake_json_call(judge_reply, fail_judge_on=(0,))
     monkeypatch.setattr(matching, "json_call", call)
 
     res = run(matching.run_matching("profile", MATCH_PROJECTS, CFG, top_n=3))
-    assert res.n_failed_map == 1
+    assert res.n_failed_judge == 1
     assert "Partial results" in res.warning
     assert "never read" in res.warning
+    assert len(res.matches) == len(MATCH_PROJECTS) - 1
 
 
-def test_project_omitted_by_judge_is_kept_and_flagged(monkeypatch):
-    def map_reply(user, i):
-        ids = [p["id"] for p in MATCH_PROJECTS if f'"{p["id"]}"' in user]
-        return {"candidates": [{"projectId": pid, "fit": 60, "reason": "r", "evidence": [], "concerns": []} for pid in ids]}
-
+def test_project_omitted_by_the_judge_is_counted_not_invented(monkeypatch):
+    """With no earlier pass there is no fallback score to show. Inventing one
+    would be worse than admitting the project was skipped, so it is counted."""
     def judge_reply(user):
-        return {"verdicts": []}  # judge silently drops everything
+        return {"verdicts": []}  # the model silently drops everything
 
-    call, _ = fake_json_call(map_reply, judge_reply)
+    call, _ = fake_json_call(judge_reply)
     monkeypatch.setattr(matching, "json_call", call)
 
     res = run(matching.run_matching("profile", MATCH_PROJECTS, CFG, top_n=3))
-    assert len(res.matches) == 3, "omitted projects must not vanish"
-    assert all("not re-judged" in m.rationale for m in res.matches)
+    assert res.matches == []
+    assert res.dropped_ids == len(MATCH_PROJECTS)
+    assert "could be scored" in res.warning
 
 
 def test_top_n_is_respected(monkeypatch):
-    def map_reply(user, i):
-        ids = [p["id"] for p in MATCH_PROJECTS if f'"{p["id"]}"' in user]
-        return {"candidates": [{"projectId": pid, "fit": 80, "reason": "r", "evidence": [], "concerns": []} for pid in ids]}
-
     def judge_reply(user):
-        ids = [p["id"] for p in MATCH_PROJECTS if f'"{p["id"]}"' in user]
-        return {"verdicts": [{"projectId": pid, "score": 50 + int(pid[1]), "rationale": "j", "evidence": [], "gaps": []} for pid in ids]}
+        return {"verdicts": [{"projectId": pid, "score": 50 + int(pid[1]), "rationale": "j",
+                              "evidence": [], "gaps": []} for pid in ids_in(user)]}
 
-    call, _ = fake_json_call(map_reply, judge_reply)
+    call, _ = fake_json_call(judge_reply)
     monkeypatch.setattr(matching, "json_call", call)
 
     res = run(matching.run_matching("profile", MATCH_PROJECTS, CFG, top_n=1))
@@ -292,15 +298,21 @@ def test_empty_profile_short_circuits_without_calling_the_model(monkeypatch):
     assert res.matches == [] and "profile is empty" in res.warning
 
 
-def test_map_declining_to_match_yields_no_results(monkeypatch):
-    """A model that correctly says "none of these fit" must produce an empty
-    result, not a forced ranking."""
-    call, _ = fake_json_call(lambda u, i: {"candidates": []}, lambda u: {"verdicts": []})
+def test_low_scores_are_reported_not_suppressed(monkeypatch):
+    """The filter is lexical, so weak projects reach the judge by design. It
+    must score them honestly rather than omit them — the user decides what a 20
+    is worth."""
+    def judge_reply(user):
+        return {"verdicts": [{"projectId": pid, "score": 12, "rationale": "weak overlap",
+                              "evidence": [], "gaps": ["everything"]} for pid in ids_in(user)]}
+
+    call, _ = fake_json_call(judge_reply)
     monkeypatch.setattr(matching, "json_call", call)
 
     res = run(matching.run_matching("profile", MATCH_PROJECTS, CFG, top_n=5))
-    assert res.matches == []
-    assert "No project" in res.warning
+    assert len(res.matches) == len(MATCH_PROJECTS)
+    assert all(m.score == 12 for m in res.matches)
+    assert not res.warning
 
 
 # --------------------------------------------------------------------------- #
