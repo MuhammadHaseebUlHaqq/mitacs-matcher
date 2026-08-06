@@ -1,3 +1,13 @@
+---
+title: Mitacs Matcher
+emoji: 🎓
+colorFrom: gray
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Mitacs Matcher
 
 Upload your own documents, get the Mitacs Globalink projects you actually fit —

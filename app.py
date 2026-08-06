@@ -29,6 +29,7 @@ Endpoints
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import os
 import uuid
@@ -47,11 +48,25 @@ from engine.prefilter import Prefilter
 from engine.profile import build_profile, render_profile
 
 ROOT = Path(__file__).parent
+# The corpus ships gzipped: at 12 MB the plain file exceeds the 10 MB non-LFS
+# ceiling on Hugging Face's hub, and it compresses ~3.4x. The uncompressed file
+# is still read if present, so a local scrape drops in without a re-zip.
 DATA = ROOT / "data" / "projects.json"
+DATA_GZ = ROOT / "data" / "projects.json.gz"
 
 app = FastAPI(title="Mitacs Matcher")
 
-PROJECTS: list[dict] = json.loads(DATA.read_text(encoding="utf-8")) if DATA.exists() else []
+
+def _load_corpus() -> list[dict]:
+    if DATA.exists():
+        return json.loads(DATA.read_text(encoding="utf-8"))
+    if DATA_GZ.exists():
+        with gzip.open(DATA_GZ, "rt", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+
+PROJECTS: list[dict] = _load_corpus()
 PREFILTER = Prefilter(PROJECTS) if PROJECTS else None
 
 
