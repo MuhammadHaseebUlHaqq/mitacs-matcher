@@ -1,0 +1,16 @@
+# Render blueprint. Committing this means the service is reproducible from the
+# repo rather than from settings clicked into a dashboard.
+services:
+  - type: web
+    name: mitacs-matcher
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    # Cheap and dependency-free — /api/health already reports corpus size, so a
+    # 200 here also proves the gzipped corpus actually loaded.
+    healthCheckPath: /api/health
+    envVars:
+      # Per-process, not per-user: on a shared instance several people fan out
+      # at once, and the free plan has 0.1 CPU / 512 MB to spend.
+      - key: MAX_CONCURRENCY
+        value: "4"

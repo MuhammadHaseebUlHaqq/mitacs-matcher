@@ -22,8 +22,10 @@ COPY --chown=user . .
 # default of 8 — several concurrent users each open their own batch of calls.
 ENV MAX_CONCURRENCY=4
 
-# 7860 is the port Spaces expects; app_port in README.md must agree.
+# Render injects $PORT and expects the process to honour it; 7860 is the
+# fallback, which is also what a Hugging Face Space would expect. Shell form,
+# not exec form, so ${PORT} is actually expanded rather than passed literally.
 # Binding 0.0.0.0 rather than app.py's local-dev 127.0.0.1 is what makes the
 # container reachable from outside.
 EXPOSE 7860
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-7860}"]

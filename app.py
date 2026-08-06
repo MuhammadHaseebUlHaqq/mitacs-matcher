@@ -48,9 +48,9 @@ from engine.prefilter import Prefilter
 from engine.profile import build_profile, render_profile
 
 ROOT = Path(__file__).parent
-# The corpus ships gzipped: at 12 MB the plain file exceeds the 10 MB non-LFS
-# ceiling on Hugging Face's hub, and it compresses ~3.4x. The uncompressed file
-# is still read if present, so a local scrape drops in without a re-zip.
+# The corpus ships gzipped: 12 MB of JSON compresses ~3.4x, which keeps clones
+# and image builds small. The uncompressed file still wins if present, so a
+# local scrape drops in without a re-zip.
 DATA = ROOT / "data" / "projects.json"
 DATA_GZ = ROOT / "data" / "projects.json.gz"
 
