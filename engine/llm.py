@@ -75,20 +75,28 @@ class LLMConfig:
 # --------------------------------------------------------------------------- #
 # Error extraction
 # --------------------------------------------------------------------------- #
-def _error_message(r: httpx.Response) -> str:
-    """Pull the most useful message out of a provider error response."""
+def _error_message(r: httpx.Response, provider: str = "") -> str:
+    """Pull the most useful message out of a provider error response.
+
+    The provider and status code are prepended deliberately. A bare upstream
+    string like "Your project has been denied access" reads as if this app
+    refused the request, and gives no clue which of the two providers — or which
+    account — to go and fix.
+    """
+    label = {"openrouter": "OpenRouter", "gemini": "Gemini"}.get(provider, provider or "Provider")
+    where = f"{label} refused (HTTP {r.status_code})"
     try:
         body = r.json()
     except ValueError:
-        return f"HTTP {r.status_code}"
+        return where
 
     err = body.get("error") if isinstance(body, dict) else None
     if isinstance(err, dict):
         meta = err.get("metadata") or {}
         msg = meta.get("raw") or err.get("message")
         if msg:
-            return str(msg).strip()
-    return f"HTTP {r.status_code}"
+            return f"{where}: {str(msg).strip()}"
+    return where
 
 
 # Longest we will wait on a single backoff. Galt RAG capped this at 5s to keep a
@@ -241,9 +249,9 @@ async def llm_call(
             r = await client.post(url, json=payload, headers=headers, timeout=120)
             if r.status_code in (400, 401, 402, 403, 404):
                 # Auth / credits / bad model — retrying won't help.
-                raise CallError(_error_message(r))
+                raise CallError(_error_message(r, cfg.provider))
             if r.status_code == 429 or r.status_code >= 500:
-                last_reason = _error_message(r)
+                last_reason = _error_message(r, cfg.provider)
                 if attempt == attempts - 1:
                     break
                 wait = _retry_after_seconds(r) or 1.5 * (attempt + 1)

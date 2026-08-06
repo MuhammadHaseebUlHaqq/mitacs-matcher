@@ -106,11 +106,23 @@ def test_openrouter_text_extraction():
     assert _openrouter_text({"choices": [{"message": {"content": "  hi  "}}]}) == "hi"
 
 
-def test_error_message_prefers_the_providers_own_text():
+def test_error_message_names_the_provider_and_keeps_its_own_text():
+    """A bare upstream string reads as if this app refused the request. The
+    provider and status have to be on the front so the user knows whose account
+    to go and fix — with two providers wired up, "denied access" is ambiguous."""
     r = httpx.Response(429, json={"error": {"message": "rate limited upstream"}})
-    assert _error_message(r) == "rate limited upstream"
-    r2 = httpx.Response(500, text="not json")
-    assert _error_message(r2) == "HTTP 500"
+    msg = _error_message(r, "gemini")
+    assert msg == "Gemini refused (HTTP 429): rate limited upstream"
+
+    r2 = httpx.Response(403, json={"error": {"message": "Your project has been denied access."}})
+    assert _error_message(r2, "gemini").startswith("Gemini refused (HTTP 403): ")
+
+    r3 = httpx.Response(402, json={"error": {"message": "insufficient credits"}})
+    assert _error_message(r3, "openrouter") == "OpenRouter refused (HTTP 402): insufficient credits"
+
+    # A non-JSON body still has to say who and what.
+    r4 = httpx.Response(500, text="not json")
+    assert _error_message(r4, "openrouter") == "OpenRouter refused (HTTP 500)"
 
 
 # --------------------------------------------------------------------------- #
