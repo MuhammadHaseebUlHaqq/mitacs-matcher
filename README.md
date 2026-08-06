@@ -127,7 +127,6 @@ engine/profile.py     STAGE 0 — knowledge base → capability profile (map-red
 engine/prefilter.py   STAGE 1 — BM25 recall filter (the only non-LLM step)
 engine/matching.py    STAGE 2 — the comparative judge
 app.py                FastAPI: parse, profile, match, export — stateless throughout
-api/index.py          Vercel entrypoint (imports the same app)
 static/landing.html   brutalist landing page
 static/index.html     the matcher console — owns the workspace in localStorage
 static/brutal.css     design system (tokens taken from the v0 brutalist template)
